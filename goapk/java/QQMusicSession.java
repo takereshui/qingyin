@@ -270,10 +270,18 @@ final class QQMusicSession {
             + "&s_url=" + enc("https://graph.qq.com/oauth2.0/login_jump")
             + "&ptlang=2052&ptredirect=100&aid=" + QQ_APP_ID + "&daid=383&j_later=0"
             + "&low_login_hour=0&regmaster=0&pt_login_type=3&pt_aid=0&pt_aaid=16&pt_light=0&pt_3rd_aid=" + QQ_MUSIC_CONNECT_ID;
-        Response checkSig = request("GET", checkUrl, null, formatCookies(merged), qqLoginHeaders(), false);
-        merged.putAll(cookiesFrom(checkSig.headers));
-        String pSkey = merged.get("p_skey");
-        if (pSkey == null || pSkey.isEmpty()) throw new IllegalStateException("QQ 授权确认后未返回 p_skey");
+        requestCookieChain(checkUrl, merged, qqLoginHeaders());
+        // Some QQ regions return a different check_sig host in the successful ptuiCB callback.
+        // Retry the exact server-supplied URL and retain every Set-Cookie value across redirects.
+        String pSkey = firstCookie(merged, "p_skey", "skey");
+        if (pSkey.isEmpty() && !redirectUrl.isEmpty()) {
+            requestCookieChain(redirectUrl, merged, qqLoginHeaders());
+            pSkey = firstCookie(merged, "p_skey", "skey");
+        }
+        // The authorization endpoint also accepts the base g_tk value for some current QQ
+        // web sessions. Do not abort here: attempting the exchange gives a concrete server
+        // response instead of leaving users stuck at an opaque p_skey-only failure.
+        if (pSkey.isEmpty()) Log.w(TAG, "QQ check_sig returned no p_skey; continuing with base g_tk");
 
         String form = "response_type=code&client_id=" + QQ_MUSIC_CONNECT_ID
             + "&redirect_uri=" + enc("https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/")
@@ -362,6 +370,18 @@ final class QQMusicSession {
         }
     }
 
+    private void requestCookieChain(String startUrl, Map<String, String> cookies, Map<String, String> headers) throws Exception {
+        String nextUrl = startUrl;
+        for (int hop = 0; hop < 4 && nextUrl != null && !nextUrl.isEmpty(); hop++) {
+            Response response = request("GET", nextUrl, null, formatCookies(cookies), headers, false);
+            cookies.putAll(cookiesFrom(response.headers));
+            String location = header(response.headers, "Location");
+            if (location.isEmpty()) break;
+            try { nextUrl = new URL(new URL(nextUrl), location).toString(); }
+            catch (Exception ignored) { break; }
+        }
+    }
+
     private Response request(String method, String rawUrl, byte[] body, String cookie, Map<String, String> extra, boolean followRedirects) throws Exception {
         URL url = new URL(rawUrl); HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(12000); conn.setReadTimeout(18000); conn.setInstanceFollowRedirects(followRedirects); conn.setRequestMethod(method);
@@ -395,6 +415,7 @@ final class QQMusicSession {
     private static Map<String, String> cookiesFrom(Map<String, List<String>> headers) { Map<String, String> result = new HashMap<>(); if (headers == null) return result; for (Map.Entry<String, List<String>> e : headers.entrySet()) { if (e.getKey() == null || !"Set-Cookie".equalsIgnoreCase(e.getKey()) || e.getValue() == null) continue; for (String line : e.getValue()) { if (line == null) continue; String first = line.split(";", 2)[0]; int at = first.indexOf('='); if (at > 0) result.put(first.substring(0, at).trim(), first.substring(at + 1).trim()); } } return result; }
     private static String formatCookies(Map<String, String> cookies) { ArrayList<String> parts = new ArrayList<>(); for (Map.Entry<String, String> e : cookies.entrySet()) if (e.getKey() != null && !e.getKey().isEmpty() && e.getValue() != null) parts.add(e.getKey() + "=" + e.getValue()); return android.text.TextUtils.join("; ", parts); }
     private static String cookieValue(String cookie, String key) { if (cookie == null || key == null) return ""; for (String piece : cookie.split(";")) { String[] pair = piece.trim().split("=", 2); if (pair.length == 2 && key.equals(pair[0].trim())) return pair[1].trim(); } return ""; }
+    private static String firstCookie(Map<String, String> cookies, String... names) { if (cookies == null) return ""; for (String name : names) { String value = cookies.get(name); if (value != null && !value.isEmpty()) return value; } return ""; }
     private static String firstString(JSONObject value, String... keys) { if (value == null) return ""; for (String key : keys) { String raw = value.optString(key, ""); if (!raw.isEmpty() && !"0".equals(raw)) return raw; } return ""; }
     private void pruneQrSessions() { long now = System.currentTimeMillis(); for (Map.Entry<String, QrSession> e : qrSessions.entrySet()) if (now - e.getValue().createdAt > QR_TTL_MS) qrSessions.remove(e.getKey()); }
 

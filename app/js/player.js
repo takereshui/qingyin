@@ -4,7 +4,7 @@ const Player = (() => {
   let queue = [], index = -1, lyrics = [], lyricIdx = -1, mode = 'loop', seeking = false, pendingSeekRatio = null;
   let lastLead = '', lyricRequestId = 0, lastNativeMediaSync = 0, lastNativeMediaKey = '', localSeekBackup = null;
   let nativeLocalActive = false, nativeLocalPlaying = false, nativeLocalDuration = 0, nativeLocalPosition = 0;
-  let shuffleHistory = [], shuffleHistoryIndex = -1;
+  let shuffleHistory = [], shuffleHistoryIndex = -1, playRequestId = 0;
   const listeners = new Set();
 
   function emit(evt, data) { listeners.forEach(fn => { try { fn(evt, data); } catch {} }); }
@@ -19,6 +19,24 @@ const Player = (() => {
   function current() { return index >= 0 && index < queue.length ? queue[index] : null; }
   function nativeBridge() { return typeof window !== 'undefined' ? window.NativeBridge : null; }
   function isSameSong(a, b) { return String(a?.id || '') === String(b?.id || ''); }
+  function isActivePlayRequest(requestId, song) { return requestId === playRequestId && current() === song; }
+  function isInterruptedPlayError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    return error?.name === 'AbortError' || message.includes('interrupted by a new load request') || message.includes('play() request was interrupted');
+  }
+  async function loadAndPlay(a, source, requestId, song) {
+    if (!isActivePlayRequest(requestId, song)) return false;
+    try { a.pause(); } catch {}
+    if (!isActivePlayRequest(requestId, song)) return false;
+    a.src = source; a.load();
+    if (!isActivePlayRequest(requestId, song)) return false;
+    try { await a.play(); }
+    catch (error) {
+      if (!isActivePlayRequest(requestId, song) || isInterruptedPlayError(error)) return false;
+      throw error;
+    }
+    return isActivePlayRequest(requestId, song);
+  }
 
   function syncNativeMedia(force = false) {
     if (nativeLocalActive) return;
@@ -86,6 +104,7 @@ const Player = (() => {
 
   async function playAt(target, { fromShuffleHistory = false } = {}) {
     if (target < 0 || target >= queue.length) return;
+    const requestId = ++playRequestId;
     index = target;
     if (mode === 'shuffle' && !fromShuffleHistory) recordShuffleIndex(target);
     const song = queue[index];
@@ -110,12 +129,15 @@ const Player = (() => {
       if (song._localUrl || song._localFile) {
         if (!song._localUrl && song._localFile) song._localUrl = URL.createObjectURL(song._localFile);
         song._playbackQuality = '本地文件 · 原始音质';
-        a.src = song._localUrl; a.load(); await a.play(); emit('play', song); void loadLyric(song); return;
+        if (!await loadAndPlay(a, song._localUrl, requestId, song)) return;
+        emit('play', song); void loadLyric(song); return;
       }
       const saved = await DL.get(song.id);
+      if (!isActivePlayRequest(requestId, song)) return;
       if (saved && saved.blob) {
         song._playbackQuality = saved.qualityLabel || '已下载文件 · 原始音质';
-        a.src = URL.createObjectURL(saved.blob); a.load(); await a.play(); emit('play', song); void loadLyric(song); return;
+        if (!await loadAndPlay(a, URL.createObjectURL(saved.blob), requestId, song)) return;
+        emit('play', song); void loadLyric(song); return;
       }
       const quality = Store.getQuality();
       let url = '';
@@ -123,6 +145,7 @@ const Player = (() => {
       if (isQQ) {
         if (!Store.getApiKey() && !Store.isBackup()) throw new Error('请先在设置中配置 ChKSz API Key 以播放 QQ 音乐');
         const info = await API.qqMusic(song.qqMid || String(song.id).replace(/^qq:/, ''), quality);
+        if (!isActivePlayRequest(requestId, song)) return;
         url = info.url || '';
         song._qqLrc = info.lrc || song._qqLrc || '';
         if (info.picUrl) song.picUrl = info.picUrl;
@@ -131,20 +154,27 @@ const Player = (() => {
         song._playbackQuality = `QQ · ${info.bitrate || Store.getQualityLabel(quality)}`;
       } else {
         if (Store.getApiKey() || Store.isBackup()) {
-          try { const info = await API.music(song.id, quality); url = info.url || ''; if (info.picUrl && !song.picUrl) song.picUrl = info.picUrl; } catch {}
+          try { const info = await API.music(song.id, quality); if (!isActivePlayRequest(requestId, song)) return; url = info.url || ''; if (info.picUrl && !song.picUrl) song.picUrl = info.picUrl; } catch {}
         }
-        if (!url) { try { url = await NCM.musicUrl(song.id, quality) || ''; } catch {} }
+        if (!url) { try { url = await NCM.musicUrl(song.id, quality) || ''; if (!isActivePlayRequest(requestId, song)) return; } catch {} }
       }
       if (!url) throw new Error('无播放地址');
       song._playbackQuality = song._playbackQuality || Store.getQualityLabel(quality);
       const cached = await NCM.getCachedAudio(url);
-      a.src = cached ? URL.createObjectURL(await cached.blob()) : url;
-      a.load(); await a.play();
+      if (!isActivePlayRequest(requestId, song)) return;
+      let playbackSource = url;
+      if (cached) {
+        const blob = await cached.blob();
+        if (!isActivePlayRequest(requestId, song)) return;
+        playbackSource = URL.createObjectURL(blob);
+      }
+      if (!await loadAndPlay(a, playbackSource, requestId, song)) return;
       NCM.cacheAudio(url, song.id).catch(() => {});
       emit('play', song); void loadLyric(song);
     } catch (e) {
+      if (!isActivePlayRequest(requestId, song) || isInterruptedPlayError(e)) return;
       emit('error', e.message || String(e));
-      setTimeout(() => next(true, { forceAdvance: true }), 800);
+      setTimeout(() => { if (isActivePlayRequest(requestId, song)) next(true, { forceAdvance: true }); }, 800);
     }
   }
 

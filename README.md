@@ -2,7 +2,7 @@
 
 Molan Light Music 是一个无广告、以本地音乐优先播放为核心的 Android 音乐客户端。它使用 WebView 承载轻量前端，并通过定制的 `goapk` 原生运行时实现系统下载、本地媒体扫描、Android 原生本地播放器、媒体会话和沉浸式界面。
 
-当前源码快照对应 **1.3.14（versionCode 18）**。该版本包含网易云 NCMC 登录、APK 内独立 QQ 音乐 QR 登录、网易云/QQ 歌单合并、ChKSz QQ MID 音源解析、歌词缓存、本地优先播放，以及可操作的播放队列、列表循环、单曲循环和带历史回退的随机播放。QQ 扫码确认后的会话收尾已改为分阶段显示状态，并解析 QQ 音乐授权响应建立加密会话。
+当前源码快照对应 **1.3.15（versionCode 19）**。该版本包含网易云 NCMC 登录、APK 内独立 QQ 音乐 QR 登录、网易云/QQ 歌单合并、ChKSz QQ MID 音源解析、歌词缓存、本地优先播放，以及可操作的播放队列、列表循环、单曲循环和带历史回退的随机播放。QQ 授权会合并 `check_sig` 重定向链 Cookie，并在 `p_skey` 缺失时继续完成兼容授权交换；播放器使用加载令牌消除连续切歌时被中断的 `play()` 竞态。
 
 > QQ 登录与歌单读取依赖 QQ 音乐非公开网络交互，可能受上游策略影响。本项目仅供用户登录自己的账户、读取个人歌单及播放有合法收听权限的内容；不得用于绕过会员、付费或版权限制。
 
@@ -34,7 +34,7 @@ cp /tmp/goapk-dex/classes.dex internal/embed/classes.dex
 make build
 ./goapk build -s ../app \
   --package im.molan.music --name "Molan Light Music" \
-  --version-code 18 --version-name "1.3.14" \
+  --version-code 19 --version-name "1.3.15" \
   ../molan-light-music.apk
 apksigner verify --verbose --min-sdk-version 24 ../molan-light-music.apk
 ```

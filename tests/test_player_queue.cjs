@@ -68,4 +68,44 @@ player.clearQueue();
 assert.strictEqual(player.queue.length, 1, '清空队列应保留正在播放的歌曲');
 assert.strictEqual(player.current.id, songs[shuffleCurrent].id);
 
-console.log('PASS: player queue order, single-loop, shuffle history, removal, and clear behavior');
+// Race regression: an obsolete play() promise may reject after a new track calls load().
+// It must be ignored rather than surfaced as a player error or an automatic skip.
+let rejectFirstPlay;
+let playCount = 0;
+const raceAudio = {
+  src: '', currentTime: 0, duration: 0, paused: true,
+  seekable: { length: 0 },
+  pause() { this.paused = true; },
+  play() {
+    this.paused = false; playCount += 1;
+    if (playCount === 1) return new Promise((resolve, reject) => { rejectFirstPlay = reject; });
+    return Promise.resolve();
+  },
+  removeAttribute() { this.src = ''; }, load() {}, addEventListener() {},
+};
+const raceEvents = [];
+const raceContext = {
+  console, setTimeout: () => 1, clearTimeout: () => {},
+  document: { getElementById: () => raceAudio },
+  Store: { getMode: () => 'loop', setMode: () => {}, pushHistory: () => {}, getQuality: () => 'exhigh', getQualityLabel: () => '超清', getApiKey: () => '', isBackup: () => false },
+  DL: { get: async () => ({ blob: new Blob(['audio']) }) },
+  NCM: {}, API: {}, URL, Blob, addEventListener() {},
+};
+raceContext.window = raceContext;
+vm.createContext(raceContext);
+vm.runInContext(source, raceContext);
+const racePlayer = raceContext.Player;
+racePlayer.on((type, payload) => { if (type === 'error') raceEvents.push(payload); });
+racePlayer.setQueue(songs, 'a');
+(async () => {
+  const first = racePlayer.playAt(0);
+  for (let i = 0; i < 4 && typeof rejectFirstPlay !== 'function'; i++) await Promise.resolve();
+  assert.strictEqual(typeof rejectFirstPlay, 'function', '首次音源应已进入待定 play 状态');
+  const second = racePlayer.playAt(1);
+  for (let i = 0; i < 3; i++) await Promise.resolve();
+  rejectFirstPlay(new Error('The play() request was interrupted by a new load request.'));
+  await Promise.all([first, second]);
+  assert.strictEqual(racePlayer.current.id, 'b');
+  assert.deepStrictEqual(raceEvents, [], '陈旧的 play 中断不得显示为播放错误');
+  console.log('PASS: player queue order, single-loop, shuffle history, removal, clear behavior, and load-race cancellation');
+})().catch(error => { console.error(error); process.exit(1); });
