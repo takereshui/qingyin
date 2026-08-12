@@ -23,20 +23,25 @@ class PlaylistRepository(
     private val detailTtlMs = 12L * 60 * 60 * 1000
 
     suspend fun playlists(settings: AppSettings, userId: Long, force: Boolean = false): List<PlaylistSummary> = withContext(Dispatchers.IO) {
-        if (!force) readList(userId)?.takeIf { it.first }?.second?.let { return@withContext it }
-        val result = ncm.userPlaylists(settings, userId)
-        if (result.isNotEmpty()) writeList(userId, result)
-        result
+        val cached = readList(userId)?.second.orEmpty()
+        if (!force && cached.isNotEmpty()) return@withContext cached
+        runCatching { ncm.userPlaylists(settings, userId) }
+            .onSuccess { result -> if (result.isNotEmpty()) writeList(userId, result) }
+            .getOrElse { error ->
+                if (cached.isNotEmpty()) cached else throw error
+            }
     }
 
     suspend fun detail(settings: AppSettings, playlist: PlaylistSummary, force: Boolean = false): PlaylistDetail = withContext(Dispatchers.IO) {
-        if (!force) readDetail(playlist.id)?.takeIf { it.first }?.second?.let { return@withContext it }
-        val result = when (playlist.source) {
-            Track.Source.QQ -> qq.publicPlaylist(playlist.id)
-            else -> ncm.playlistDetail(settings, playlist.id)
-        }
-        writeDetail(playlist.id, result)
-        result
+        val cached = readDetail(playlist.id)?.second
+        if (!force && cached != null) return@withContext cached
+        runCatching {
+            when (playlist.source) {
+                Track.Source.QQ -> qq.publicPlaylist(playlist.id)
+                else -> ncm.playlistDetail(settings, playlist.id)
+            }
+        }.onSuccess { result -> writeDetail(playlist.id, result) }
+            .getOrElse { error -> cached ?: throw error }
     }
 
     suspend fun import(settings: AppSettings, source: Track.Source, input: String): PlaylistDetail = withContext(Dispatchers.IO) {

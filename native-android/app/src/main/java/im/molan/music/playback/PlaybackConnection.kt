@@ -29,6 +29,9 @@ class PlaybackConnection(context: Context) {
     private val _errorMessage = MutableStateFlow("")
     val errorMessage: StateFlow<String> = _errorMessage.asStateFlow()
     private var controller: MediaController? = null
+    private var pendingPlayback: Pair<List<Track>, Int>? = null
+    private var cachedQueueIds: List<String> = emptyList()
+    private var cachedQueue: List<Track> = emptyList()
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -48,6 +51,10 @@ class PlaybackConnection(context: Context) {
             runCatching { future.get() }.onSuccess { mediaController ->
                 controller = mediaController
                 mediaController.addListener(listener)
+                pendingPlayback?.let { (tracks, index) ->
+                    pendingPlayback = null
+                    startPlayback(mediaController, tracks, index)
+                }
                 publish(mediaController)
             }
         }, ContextCompat.getMainExecutor(appContext))
@@ -60,10 +67,19 @@ class PlaybackConnection(context: Context) {
     }
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
-        val mediaController = controller ?: return
         if (tracks.isEmpty()) return
+        val safeIndex = startIndex.coerceIn(0, tracks.lastIndex)
+        val mediaController = controller
+        if (mediaController == null) {
+            pendingPlayback = tracks to safeIndex
+            return
+        }
+        startPlayback(mediaController, tracks, safeIndex)
+    }
+
+    private fun startPlayback(mediaController: MediaController, tracks: List<Track>, startIndex: Int) {
         _errorMessage.value = ""
-        mediaController.setMediaItems(tracks.map(Track::toMediaItem), startIndex.coerceIn(0, tracks.lastIndex), 0L)
+        mediaController.setMediaItems(tracks.map(Track::toMediaItem), startIndex, 0L)
         mediaController.prepare()
         mediaController.play()
         publish(mediaController)
@@ -116,9 +132,16 @@ class PlaybackConnection(context: Context) {
 
     private fun publish(player: Player?) {
         if (player == null) return
-        val queue = buildList {
-            for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).toTrack())
+        val queueIds = buildList {
+            for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).mediaId)
         }
+        if (queueIds != cachedQueueIds || (queueIds.isEmpty() && cachedQueue.isNotEmpty())) {
+            cachedQueueIds = queueIds
+            cachedQueue = buildList {
+                for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).toTrack())
+            }
+        }
+        val queue = cachedQueue
         val currentIndex = player.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: -1
         _snapshot.value = PlayerSnapshot(
             queue = queue,
