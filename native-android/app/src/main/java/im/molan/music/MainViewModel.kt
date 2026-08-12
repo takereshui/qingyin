@@ -430,6 +430,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(ncmCookie = "", ncmNickname = "", ncmUserId = 0L) }
     }
 
+    /** 将线上歌单的曲目按当前音质逐首加入系统下载队列，下载完成后即作为本地音乐可播放。 */
+    fun syncPlaylistToLocal(playlist: PlaylistSummary) {
+        if (playlist.source == Track.Source.LOCAL) return
+        viewModelScope.launch {
+            _playlistMessage.value = "正在同步《${playlist.name}》到本地…"
+            val detail = runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
+                .getOrElse { error ->
+                    _playlistMessage.value = "歌单同步失败：${error.message ?: "无法读取歌单曲目"}"
+                    return@launch
+                }
+            var queued = 0
+            var failed = 0
+            detail.tracks.forEachIndexed { index, track ->
+                _playlistMessage.value = "正在同步 ${index + 1}/${detail.tracks.size}：${track.title}"
+                val downloadable = runCatching {
+                    when (track.source) {
+                        Track.Source.QQ -> qqRepository.resolve(settings.value, track).track
+                        Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
+                        else -> requireNotNull(track.remoteUrl) { "没有在线音源" }.let { track }
+                    }
+                }.getOrNull()
+                if (downloadable?.remoteUrl.isNullOrBlank()) {
+                    failed++
+                    return@forEachIndexed
+                }
+                val extension = downloadable.audioExtension?.lowercase()?.replace(Regex("[^a-z0-9]"), "")?.takeIf(String::isNotBlank) ?: "mp3"
+                val quality = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
+                val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+                runCatching { downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $quality", fileName) }
+                    .onSuccess { queued++ }
+                    .onFailure { failed++ }
+            }
+            refreshDownloads()
+            _playlistMessage.value = when {
+                queued == detail.tracks.size -> "已将 ${queued} 首歌曲加入本地下载队列"
+                queued > 0 -> "已加入 ${queued} 首；${failed} 首因音质或版权限制未加入"
+                else -> "未能加入下载队列，请检查当前音质设置和音源可用性"
+            }
+        }
+    }
+
     fun enqueueDownload(track: Track) {
         viewModelScope.launch {
             val requestedQuality = if (track.source == Track.Source.QQ) settings.value.qqQuality.label else settings.value.quality.label

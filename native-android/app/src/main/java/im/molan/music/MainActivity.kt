@@ -98,6 +98,7 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
@@ -383,7 +384,7 @@ private fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage:
         if (online.isEmpty()) item { EmptyHint("登录网易云或导入 QQ / 网易云歌单后，会在这里同步显示。") }
         items(online.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.openPlaylist(playlist, force = true) }) }
+                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.openPlaylist(playlist, force = true) }, onSync = { model.syncPlaylistToLocal(playlist) }) }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
@@ -401,6 +402,12 @@ private fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage:
 @Composable
 private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.MoreVert, "设置") }
+            }
+        }
         item {
             FilledTonalButton(
                 onClick = if (settings.ncmCookie.isBlank()) onNcmLogin else onNcmAccount,
@@ -441,7 +448,7 @@ private fun CreateLocalPlaylistDialog(onDismiss: () -> Unit, onCreate: (String) 
 }
 
 @Composable
-private fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick: () -> Unit, onRefresh: () -> Unit) {
+private fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick: () -> Unit, onRefresh: () -> Unit, onSync: (() -> Unit)? = null) {
     var menuExpanded by remember { mutableStateOf(false) }
     Card(
         modifier = modifier.clickable(onClick = onClick),
@@ -472,6 +479,14 @@ private fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick:
             Spacer(Modifier.height(10.dp))
             Text(playlist.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
             Text("${playlist.trackCount} 首", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (onSync != null) {
+                Spacer(Modifier.height(8.dp))
+                FilledTonalButton(onClick = onSync, modifier = Modifier.fillMaxWidth().height(36.dp)) {
+                    Icon(Icons.Default.Download, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("同步到本地", style = MaterialTheme.typography.labelMedium)
+                }
+            }
         }
     }
 }
@@ -513,6 +528,9 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
                 IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "返回") }
                 Text(detail.summary.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (detail.summary.source != Track.Source.LOCAL) {
+                    IconButton(onClick = { model.syncPlaylistToLocal(detail.summary) }) { Icon(Icons.Default.Download, "同步歌单到本地") }
+                }
                 IconButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Icon(Icons.Default.Refresh, "刷新歌单") }
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 12.dp)) {
@@ -829,6 +847,7 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
     val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
     val pagerState = rememberPagerState(pageCount = { 2 })
     val lyricListState = rememberLazyListState()
+    val density = LocalDensity.current
     var sliderValue by remember(current.id) { mutableStateOf(0f) }
     var isSeeking by remember(current.id) { mutableStateOf(false) }
 
@@ -840,7 +859,9 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
             // 等待歌词页完成布局，再把当前行平滑置于可视区域中心。
             delay(48)
             val viewport = lyricListState.layoutInfo.viewportEndOffset - lyricListState.layoutInfo.viewportStartOffset
-            lyricListState.animateScrollToItem(activeLine, if (viewport > 0) -viewport / 2 else 0)
+            // 将歌词行自身的中心（而非行顶部）对齐到屏幕中心。
+            val lineHalfHeight = with(density) { 34.dp.roundToPx() }
+            lyricListState.animateScrollToItem(activeLine, if (viewport > 0) -viewport / 2 + lineHalfHeight else 0)
         }
     }
 
@@ -894,9 +915,9 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
                             Column {
                                 Text(
                                     line.text,
-                                    style = if (index == activeLine) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
-                                    color = if (index == activeLine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = if (index == activeLine) FontWeight.Bold else FontWeight.Normal,
+                                    style = if (index == activeLine) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                                    color = if (index == activeLine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.64f),
+                                    fontWeight = if (index == activeLine) FontWeight.ExtraBold else FontWeight.Normal,
                                 )
                                 line.translation?.let { translated ->
                                     Text(translated, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
