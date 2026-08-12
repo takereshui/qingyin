@@ -16,11 +16,19 @@ class LyricsRepository(private val context: Context, private val ncm: NcmReposit
     private val lyricsTtlMs = 90L * 24 * 60 * 60 * 1000
     private val missingTtlMs = 7L * 24 * 60 * 60 * 1000
 
-    suspend fun load(settings: AppSettings, track: Track): List<LyricLine> = withContext(Dispatchers.IO) {
+    /** 读取本地持久化歌词；缓存过期后仍不返回，以便调用方触发同步。 */
+    suspend fun cached(track: Track): List<LyricLine>? = withContext(Dispatchers.IO) {
         readCache(track.id)?.let { cached ->
-            if (cached.valid) return@withContext LrcParser.parse(cached.lrc, cached.translation)
-            if (cached.missing) return@withContext emptyList()
+            when {
+                cached.valid -> LrcParser.parse(cached.lrc, cached.translation)
+                cached.missing -> emptyList()
+                else -> null
+            }
         }
+    }
+
+    /** 从线上刷新歌词并写回本地；本地曲目会先按歌名、歌手和时长匹配网易云。 */
+    suspend fun refresh(settings: AppSettings, track: Track): List<LyricLine> = withContext(Dispatchers.IO) {
         val resolved = if (track.source == Track.Source.NETEASE) track else matchLocal(settings, track)
         if (resolved == null) {
             writeCache(track.id, "", "", missing = true)
@@ -35,6 +43,14 @@ class LyricsRepository(private val context: Context, private val ncm: NcmReposit
                 },
                 onFailure = { emptyList() },
             )
+    }
+
+    /** 兼容现有调用：没有本地缓存时才访问线上。 */
+    suspend fun load(settings: AppSettings, track: Track): List<LyricLine> = cached(track) ?: refresh(settings, track)
+
+    /** QQ 解析等已获得歌词的场景直接写入同一套本地缓存。 */
+    suspend fun save(track: Track, lrc: String, translation: String = "") = withContext(Dispatchers.IO) {
+        writeCache(track.id, lrc, translation, missing = LrcParser.parse(lrc, translation).isEmpty())
     }
 
     private suspend fun matchLocal(settings: AppSettings, local: Track): Track? {

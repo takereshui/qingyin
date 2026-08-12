@@ -14,6 +14,9 @@ class DailyRepository(private val context: Context, private val ncm: NcmReposito
     private val cacheFile = File(context.filesDir, "daily-v2.json")
     private val ttlMs = 10L * 60 * 1000
 
+    /** 返回本地持久化的每日推荐，不受缓存时效限制，供离线优先展示。 */
+    suspend fun cached(): List<Track> = withContext(Dispatchers.IO) { read()?.second.orEmpty() }
+
     suspend fun get(settings: AppSettings, force: Boolean = false): List<Track> = withContext(Dispatchers.IO) {
         if (!force) read()?.takeIf { it.first }?.second?.let { return@withContext it }
         val tracks = ncm.dailySongs(settings)

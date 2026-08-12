@@ -6,6 +6,9 @@ import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -29,7 +32,7 @@ class QqRepository(
     suspend fun search(settings: AppSettings, keyword: String, limit: Int = 30): List<Track> = withContext(Dispatchers.IO) {
         val payload = requestChksz(settings, mapOf("msg" to keyword, "num" to limit.coerceIn(1, 50).toString(), "type" to "json"))
         val rows = payload.optJSONArray("list") ?: JSONArray()
-        buildList {
+        val tracks = buildList {
             for (index in 0 until rows.length()) {
                 val item = rows.optJSONObject(index) ?: continue
                 val mid = item.optString("mid").trim()
@@ -45,6 +48,10 @@ class QqRepository(
                     ),
                 )
             }
+        }
+        // ChKSz 搜索结果不返回专辑 MID；用 QQ 官方单曲元数据补齐受限尺寸的封面。
+        coroutineScope {
+            tracks.map { track -> async { track.copy(artworkUri = qqCover(track.qqMid.orEmpty())) } }.awaitAll()
         }
     }
 
@@ -148,6 +155,22 @@ class QqRepository(
             ),
             tracks = tracks,
         )
+    }
+
+    private fun qqCover(songMid: String): Uri? {
+        if (songMid.isBlank()) return null
+        return runCatching {
+            val url = "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg".toHttpUrl().newBuilder()
+                .addQueryParameter("songmid", songMid)
+                .addQueryParameter("format", "json")
+                .build()
+            client.newCall(Request.Builder().url(url).header("Referer", "https://y.qq.com/").header("User-Agent", "Mozilla/5.0").get().build()).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val albumMid = JSONObject(response.body?.string().orEmpty())
+                    .optJSONArray("data")?.optJSONObject(0)?.optJSONObject("album")?.optString("mid").orEmpty()
+                albumMid.takeIf(String::isNotBlank)?.let { Uri.parse("https://y.gtimg.cn/music/photo_new/T002R300x300M000$it.jpg") }
+            }
+        }.getOrNull()
     }
 
     private fun requestChksz(settings: AppSettings, parameters: Map<String, String>): JSONObject {

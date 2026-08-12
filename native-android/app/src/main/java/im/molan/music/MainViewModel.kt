@@ -56,6 +56,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val downloadedTracks: StateFlow<List<Track>> = _downloadedTracks.asStateFlow()
     private val _downloadMessage = MutableStateFlow("正在读取系统下载…")
     val downloadMessage: StateFlow<String> = _downloadMessage.asStateFlow()
+    private val _downloadActionMessage = MutableStateFlow("")
+    val downloadActionMessage: StateFlow<String> = _downloadActionMessage.asStateFlow()
 
     private val _searchTracks = MutableStateFlow<List<Track>>(emptyList())
     val searchTracks: StateFlow<List<Track>> = _searchTracks.asStateFlow()
@@ -150,13 +152,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadDaily(force: Boolean = false) {
         viewModelScope.launch {
-            _dailyMessage.value = if (force) "正在刷新每日推荐…" else ""
-            runCatching { dailyRepository.get(settings.value, force) }
+            val cached = dailyRepository.cached()
+            if (cached.isNotEmpty()) {
+                _dailyTracks.value = cached
+                _dailyMessage.value = "已加载本地每日推荐，正在同步…"
+            } else {
+                _dailyMessage.value = if (force) "正在刷新每日推荐…" else "正在同步每日推荐…"
+            }
+            // 每次打开均从线上同步；成功后 DailyRepository 会覆盖本地持久化缓存。
+            runCatching { dailyRepository.get(settings.value, force = true) }
                 .onSuccess { tracks ->
-                    _dailyTracks.value = tracks
-                    _dailyMessage.value = if (tracks.isEmpty()) "登录后可获取每日推荐" else "每日推荐"
+                    if (tracks.isNotEmpty()) _dailyTracks.value = tracks
+                    _dailyMessage.value = when {
+                        tracks.isNotEmpty() -> "每日推荐已同步到本地"
+                        cached.isNotEmpty() -> "正在使用本地每日推荐"
+                        else -> "登录后可获取每日推荐"
+                    }
                 }
-                .onFailure { error -> _dailyMessage.value = error.message ?: "每日推荐暂不可用" }
+                .onFailure { error ->
+                    _dailyMessage.value = if (cached.isNotEmpty()) "正在使用本地每日推荐；同步失败" else error.message ?: "每日推荐暂不可用"
+                }
         }
     }
 
@@ -168,19 +183,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            _playlistMessage.value = if (force) "正在刷新我的歌单…" else ""
-            runCatching { playlistRepository.playlists(current, current.ncmUserId, force) }
+            val cached = playlistRepository.cachedPlaylists(current.ncmUserId)
+            if (cached.isNotEmpty()) {
+                _myPlaylists.value = cached
+                _playlistMessage.value = "已加载本地歌单，正在同步…"
+            } else {
+                _playlistMessage.value = if (force) "正在刷新我的歌单…" else "正在同步我的歌单…"
+            }
+            // 每次登录或打开时拉取线上目录；失败则继续保留本地列表。
+            runCatching { playlistRepository.playlists(current, current.ncmUserId, force = true) }
                 .onSuccess { list ->
-                    _myPlaylists.value = list
-                    _playlistMessage.value = if (list.isEmpty()) "没有可显示的歌单" else "共 ${list.size} 个歌单"
+                    if (list.isNotEmpty()) _myPlaylists.value = list
+                    _playlistMessage.value = when {
+                        list.isNotEmpty() -> "已同步 ${list.size} 个歌单到本地"
+                        cached.isNotEmpty() -> "正在使用本地歌单"
+                        else -> "没有可显示的歌单"
+                    }
                 }
-                .onFailure { error -> _playlistMessage.value = error.message ?: "我的歌单加载失败" }
+                .onFailure { error ->
+                    _playlistMessage.value = if (cached.isNotEmpty()) "正在使用本地歌单；同步失败" else error.message ?: "我的歌单加载失败"
+                }
         }
     }
 
     fun loadImportedPlaylists() {
         viewModelScope.launch {
-            _importedPlaylists.value = playlistRepository.cachedImported(settings.value.importedPlaylistIds)
+            val cached = playlistRepository.cachedImported(settings.value.importedPlaylistIds)
+            _importedPlaylists.value = cached
+            // 已导入的网易云和 QQ 歌单均以本地详情先展示，再逐个刷新到本地。
+            cached.forEach { summary ->
+                runCatching { playlistRepository.detail(settings.value, summary, force = true) }
+                    .onSuccess { detail ->
+                        _importedPlaylists.value = _importedPlaylists.value
+                            .filterNot { it.id == detail.summary.id } + detail.summary
+                    }
+            }
         }
     }
 
@@ -200,10 +237,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openPlaylist(playlist: PlaylistSummary, force: Boolean = false) {
         viewModelScope.launch {
-            _playlistMessage.value = "正在加载 ${playlist.name}…"
-            runCatching { playlistRepository.detail(settings.value, playlist, force) }
-                .onSuccess { detail -> _playlistDetail.value = detail; _playlistMessage.value = "" }
-                .onFailure { error -> _playlistMessage.value = error.message ?: "歌单详情加载失败" }
+            val cached = playlistRepository.cachedDetail(playlist.id)
+            if (cached != null) {
+                _playlistDetail.value = cached
+                _playlistMessage.value = "已加载本地歌单，正在同步…"
+            } else {
+                _playlistMessage.value = "正在加载 ${playlist.name}…"
+            }
+            runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
+                .onSuccess { detail ->
+                    _playlistDetail.value = detail
+                    _playlistMessage.value = ""
+                }
+                .onFailure { error ->
+                    _playlistMessage.value = if (cached != null) "正在使用本地歌单；同步失败" else error.message ?: "歌单详情加载失败"
+                }
         }
     }
 
@@ -245,6 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { resolved ->
                     playback.playQueue(listOf(resolved.track), 0)
                     _lyrics.value = LrcParser.parse(resolved.lyric)
+                    if (resolved.lyric.isNotBlank()) lyricsRepository.save(resolved.track, resolved.lyric)
                     _networkMessage.value = "正在播放：${resolved.track.title} · ${resolved.track.resolvedQqQuality?.label ?: "QQ"}"
                 }
                 .onFailure { error -> _networkMessage.value = "QQ 无法播放：${error.message ?: "没有可播放地址"}" }
@@ -269,9 +318,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadLyrics(track: Track) {
         _lyrics.value = emptyList()
         viewModelScope.launch {
-            runCatching { lyricsRepository.load(settings.value, track) }
-                .onSuccess { parsed -> _lyrics.value = parsed }
-                .onFailure { _lyrics.value = emptyList() }
+            val cached = runCatching { lyricsRepository.cached(track) }.getOrNull()
+            if (cached != null) _lyrics.value = cached
+            // 先显示本地歌词，再静默向线上同步；网络失败时继续使用本地结果。
+            runCatching { lyricsRepository.refresh(settings.value, track) }
+                .onSuccess { refreshed ->
+                    if (refreshed.isNotEmpty() || cached == null) _lyrics.value = refreshed
+                }
+                .onFailure {
+                    if (cached == null) _lyrics.value = emptyList()
+                }
         }
     }
 
@@ -333,7 +389,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun enqueueDownload(track: Track) {
         viewModelScope.launch {
-            _networkMessage.value = "正在按 ${settings.value.quality.label} 解析下载音源…"
+            val requestedQuality = if (track.source == Track.Source.QQ) settings.value.qqQuality.label else settings.value.quality.label
+            _networkMessage.value = "正在按 $requestedQuality 解析下载音源…"
+            _downloadMessage.value = "正在创建《${track.title}》下载任务…"
+            _downloadActionMessage.value = "正在解析下载音源…"
             val resolved = runCatching {
                 when (track.source) {
                     Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
@@ -353,12 +412,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $qualityLabel", fileName)
                 }.onSuccess {
                     _networkMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
+                    _downloadMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
+                    _downloadActionMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
                     refreshDownloads()
                 }.onFailure { error ->
-                    _networkMessage.value = "创建下载失败：${error.message ?: "系统下载服务不可用"}"
+                    val text = "创建下载失败：${error.message ?: "系统下载服务不可用"}"
+                    _networkMessage.value = text
+                    _downloadMessage.value = text
+                    _downloadActionMessage.value = text
                 }
             }.onFailure { error ->
-                _networkMessage.value = error.message ?: "无法获取所选音质的下载地址"
+                val text = error.message ?: "无法获取所选音质的下载地址"
+                _networkMessage.value = text
+                _downloadMessage.value = text
             }
         }
     }

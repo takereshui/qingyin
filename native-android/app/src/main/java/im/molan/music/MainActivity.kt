@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -98,6 +99,7 @@ import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.PlaybackMode
@@ -140,6 +142,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val downloadedTracks by model.downloadedTracks.collectAsStateWithLifecycle()
     val downloadMessage by model.downloadMessage.collectAsStateWithLifecycle()
+    val downloadActionMessage by model.downloadActionMessage.collectAsStateWithLifecycle()
     val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
     val playlistMessage by model.playlistMessage.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(AppTab.HOME) }
@@ -190,7 +193,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             }
         }
         if (queueVisible) QueueDialog(player, model, onDismiss = { queueVisible = false })
-        if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, model, onDismiss = { playerVisible = false })
+        if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
@@ -441,7 +444,7 @@ private fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
         Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Default.LibraryMusic, null, tint = MaterialTheme.colorScheme.primary) }
     } else {
         AsyncImage(
-            model = ImageRequest.Builder(context).data(playlist.coverUri).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
+            model = ImageRequest.Builder(context).data(playlist.coverUri).size(360).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
             contentDescription = "${playlist.name} 封面",
             modifier = modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer),
         )
@@ -634,6 +637,7 @@ private fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.u
         AsyncImage(
             model = ImageRequest.Builder(context)
                 .data(source)
+                .size(600)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(true)
@@ -656,7 +660,6 @@ private fun TrackRow(track: Track, onClick: () -> Unit) {
             val sourceLabel = when (track.source) { Track.Source.NETEASE -> "网易云"; Track.Source.QQ -> "QQ"; Track.Source.DOWNLOADED -> "已下载"; Track.Source.LOCAL -> "本地" }
             Text(listOf(sourceLabel, track.artist, track.album, formatDuration(track.durationMs)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        IconButton(onClick = onClick, modifier = Modifier.size(46.dp)) { Icon(Icons.Default.MoreVert, "播放 ${track.title}", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
@@ -765,16 +768,25 @@ private fun NcmQrLoginDialog(state: NcmQrLoginState, onDismiss: () -> Unit, onRe
 }
 
 @Composable
-private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, playbackError: String, model: MainViewModel, onDismiss: () -> Unit) {
+private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, playbackError: String, downloadActionMessage: String, model: MainViewModel, onDismiss: () -> Unit) {
     val current = snapshot.current ?: return
     val duration = maxOf(snapshot.durationMs, current.durationMs, 1L)
     val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
     val pagerState = rememberPagerState(pageCount = { 2 })
+    val lyricListState = rememberLazyListState()
     var sliderValue by remember(current.id) { mutableStateOf(0f) }
     var isSeeking by remember(current.id) { mutableStateOf(false) }
 
     LaunchedEffect(snapshot.positionMs, duration, isSeeking) {
         if (!isSeeking) sliderValue = (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    }
+    LaunchedEffect(activeLine, pagerState.currentPage, lyrics.size) {
+        if (pagerState.currentPage == 1 && activeLine >= 0) {
+            // 等待歌词页完成布局，再把当前行平滑置于可视区域中心。
+            delay(48)
+            val viewport = lyricListState.layoutInfo.viewportEndOffset - lyricListState.layoutInfo.viewportStartOffset
+            lyricListState.animateScrollToItem(activeLine, if (viewport > 0) -viewport / 2 else 0)
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -817,8 +829,9 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
                     }
                 } else {
                     LazyColumn(
+                        state = lyricListState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 34.dp, horizontal = 14.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 180.dp, horizontal = 14.dp),
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
                         items(lyrics, key = LyricLine::timeMs) { line ->
@@ -864,6 +877,7 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
                 Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium)
             }
             if (playbackError.isNotBlank()) Text(playbackError, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (downloadActionMessage.isNotBlank()) Text(downloadActionMessage, style = MaterialTheme.typography.bodyMedium, color = if (downloadActionMessage.contains("失败") || downloadActionMessage.contains("无法")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth().height(76.dp)) {
                 IconButton(onClick = model.playback::previous, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(30.dp)) }
                 IconButton(onClick = model.playback::toggle, modifier = Modifier.size(68.dp)) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放", Modifier.size(46.dp)) }
@@ -882,7 +896,7 @@ private fun CoverBackdrop(track: Track) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (source != null) {
             AsyncImage(
-                model = ImageRequest.Builder(context).data(source).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
+                model = ImageRequest.Builder(context).data(source).size(960).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().blur(42.dp),

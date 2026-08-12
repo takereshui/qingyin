@@ -22,6 +22,16 @@ class PlaylistRepository(
     private val listTtlMs = 6L * 60 * 60 * 1000
     private val detailTtlMs = 12L * 60 * 60 * 1000
 
+    /** 供界面优先展示本地持久化的歌单目录；即使缓存已过期也可离线使用。 */
+    suspend fun cachedPlaylists(userId: Long): List<PlaylistSummary> = withContext(Dispatchers.IO) {
+        readList(userId)?.second.orEmpty()
+    }
+
+    /** 供界面优先展示本地持久化的歌单详情与曲目清单。 */
+    suspend fun cachedDetail(playlistId: String): PlaylistDetail? = withContext(Dispatchers.IO) {
+        readDetail(playlistId)?.second
+    }
+
     suspend fun playlists(settings: AppSettings, userId: Long, force: Boolean = false): List<PlaylistSummary> = withContext(Dispatchers.IO) {
         val cached = readList(userId)?.second.orEmpty()
         if (!force && cached.isNotEmpty()) return@withContext cached
