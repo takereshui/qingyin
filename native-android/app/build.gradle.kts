@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,26 +14,33 @@ android {
         applicationId = "im.molan.music"
         minSdk = 24
         targetSdk = 35
-        versionCode = 24
-        versionName = "2.0.4-native"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
-    val legacyKeystorePath = providers.gradleProperty("qingyin.legacy.keystore").orNull
+    val localSigning = Properties().apply {
+        val signingFile = rootProject.file("signing.properties")
+        if (signingFile.isFile) signingFile.inputStream().use { input -> load(input) }
+    }
+    fun signingProperty(name: String): String? = providers.gradleProperty(name).orNull ?: localSigning.getProperty(name)
+    val releaseSigningConfig = signingConfigs.maybeCreate("release")
+    val legacyKeystorePath = signingProperty("qingyin.legacy.keystore")
     if (!legacyKeystorePath.isNullOrBlank() && file(legacyKeystorePath).isFile) {
-        signingConfigs.getByName("debug") {
-            storeFile = file(legacyKeystorePath)
-            storePassword = providers.gradleProperty("qingyin.legacy.keystore.password").orNull ?: ""
-            keyAlias = providers.gradleProperty("qingyin.legacy.keystore.alias").orNull ?: "1"
-            keyPassword = providers.gradleProperty("qingyin.legacy.key.password").orNull ?: ""
-            storeType = "PKCS12"
+        listOf(signingConfigs.getByName("debug"), releaseSigningConfig).forEach { config ->
+            config.storeFile = file(legacyKeystorePath)
+            config.storePassword = signingProperty("qingyin.legacy.keystore.password") ?: ""
+            config.keyAlias = signingProperty("qingyin.legacy.keystore.alias") ?: "qingyin"
+            config.keyPassword = signingProperty("qingyin.legacy.key.password") ?: ""
+            config.storeType = "PKCS12"
         }
     }
 
     buildTypes {
         release {
+            signingConfig = releaseSigningConfig
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

@@ -10,3 +10,4 @@ local.properties
 .idea/
 *.iml
 build-failure.log
+signing.properties
