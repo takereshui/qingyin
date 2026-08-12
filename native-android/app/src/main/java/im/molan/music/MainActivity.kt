@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
@@ -203,18 +205,32 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding()) {
-                when (tab) {
-                                                AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, model)
-                    AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, model)
-                    AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
-                    AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
-                    AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, downloadMessage, model)
-                    AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
-
+                if (playlistDetail != null) {
+                    PlaylistDetailScreen(
+                        detail = playlistDetail!!,
+                        model = model,
+                        onBack = model::closePlaylist,
+                    )
+                } else {
+                    when (tab) {
+                        AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, model)
+                        AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, model)
+                        AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
+                        AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
+                        AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, downloadMessage, model)
+                        AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                    }
+                }
+                if (queueVisible) {
+                    QueueDialog(
+                        snapshot = player,
+                        model = model,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                        onDismiss = { queueVisible = false },
+                    )
                 }
             }
         }
-        if (queueVisible) QueueDialog(player, model, onDismiss = { queueVisible = false })
         if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
@@ -222,7 +238,6 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         if (ncmAccountVisible) NcmAccountDialog(settings, onDismiss = { ncmAccountVisible = false }, onLogout = { model.logoutNcm(); ncmAccountVisible = false })
         if (localPlaylistCreateVisible) CreateLocalPlaylistDialog(onDismiss = { localPlaylistCreateVisible = false }, onCreate = { name -> model.createLocalPlaylist(name); localPlaylistCreateVisible = false })
         playlistImportSource?.let { source -> PlaylistImportDialog(source, onDismiss = { playlistImportSource = null }, onImport = { input -> model.importPlaylist(source, input); playlistImportSource = null }) }
-        playlistDetail?.let { detail -> PlaylistDetailScreen(detail, model, onBack = model::closePlaylist) }
     }
 }
 
@@ -250,7 +265,7 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
             }
         }
         if (dailyMessage.isNotBlank()) item { Text(dailyMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { TrackRow(it, onClick = { model.playDaily(it) }) }
+        if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { track -> TrackRow(track, matchedLocal = model.hasLocalMatch(track), onClick = { model.playDaily(track) }) }
         item { Text("最近扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         if (tracks.isEmpty()) item { EmptyHint("尚未扫描本地音乐。请到“本地”页面授权并扫描。") }
         else items(tracks.take(8), key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
@@ -292,7 +307,7 @@ private fun SearchScreen(searchTracks: List<Track>, message: String, playbackErr
         item { Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (playbackError.isNotBlank()) item { Text(playbackError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         if (searchTracks.isEmpty()) item { EmptyHint("选择来源并输入关键词后搜索在线音乐") }
-        else items(searchTracks, key = Track::id) { TrackRow(it, onClick = { model.playOnline(it) }) }
+        else items(searchTracks, key = Track::id) { track -> TrackRow(track, matchedLocal = model.hasLocalMatch(track), onClick = { model.playOnline(track) }) }
     }
 }
 
@@ -567,7 +582,13 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playOnline(track) }) }
+                    items(detail.tracks, key = Track::id) { track ->
+                        TrackRow(
+                            track = track,
+                            matchedLocal = model.hasLocalMatch(track),
+                            onClick = { model.playOnline(track) },
+                        )
+                    }
                 }
             }
         }
@@ -742,7 +763,7 @@ private fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.u
 }
 
 @Composable
-private fun TrackRow(track: Track, onClick: () -> Unit) {
+private fun TrackRow(track: Track, matchedLocal: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 12.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -752,6 +773,12 @@ private fun TrackRow(track: Track, onClick: () -> Unit) {
             Text(track.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
             val sourceLabel = when (track.source) { Track.Source.NETEASE -> "网易云"; Track.Source.QQ -> "QQ"; Track.Source.DOWNLOADED -> "已下载"; Track.Source.LOCAL -> "本地" }
             Text(listOf(sourceLabel, track.artist, track.album, formatDuration(track.durationMs)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (matchedLocal) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(start = 8.dp, end = 2.dp)) {
+                Icon(Icons.Default.CheckCircle, "已识别本地音源", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                Text("本地", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }
@@ -787,22 +814,34 @@ private fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue: 
 }
 
 @Composable
-private fun QueueDialog(snapshot: PlayerSnapshot, model: MainViewModel, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
+private fun QueueDialog(
+    snapshot: PlayerSnapshot,
+    model: MainViewModel,
+    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit,
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("当前播放 · ${modeLabel(snapshot.playbackMode)}", Modifier.weight(1f))
-                IconButton(onClick = model.playback::cycleMode) {
+                Text("当前播放 · ${modeLabel(snapshot.playbackMode)}", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                IconButton(onClick = model.playback::cycleMode, modifier = Modifier.size(42.dp)) {
                     Icon(
                         if (snapshot.playbackMode == PlaybackMode.SHUFFLE) Icons.Default.Shuffle else Icons.Default.Repeat,
                         "切换播放模式",
                     )
                 }
+                TextButton(onClick = onDismiss) { Text("关闭") }
             }
-        },
-        text = {
-            LazyColumn {
+            HorizontalDivider()
+            LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth()) {
                 items(snapshot.queue, key = Track::id) { track ->
                     val index = snapshot.queue.indexOf(track)
                     Row(
@@ -819,17 +858,16 @@ private fun QueueDialog(snapshot: PlayerSnapshot, model: MainViewModel, onDismis
                             Text(track.artist, style = MaterialTheme.typography.labelSmall)
                         }
                         if (snapshot.queue.size > 1) {
-                            IconButton(onClick = { model.playback.removeAt(index) }) {
+                            IconButton(onClick = { model.playback.removeAt(index) }, modifier = Modifier.size(42.dp)) {
                                 Text("×", style = MaterialTheme.typography.titleLarge)
                             }
                         }
                     }
                 }
             }
-        },
-        confirmButton = { FilledTonalButton(onClick = model.playback::clearKeepingCurrent) { Text("清空其余歌曲") } },
-        dismissButton = { FilledTonalButton(onClick = onDismiss) { Text("关闭") } },
-    )
+            FilledTonalButton(onClick = model.playback::clearKeepingCurrent, modifier = Modifier.fillMaxWidth()) { Text("清空其余歌曲") }
+        }
+    }
 }
 
 @Composable

@@ -394,6 +394,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return TrackMatcher.findBest(remote, candidates)
     }
 
+    /** 供列表展示使用：只有通过时长与元数据评分门槛的本地音源才显示勾选。 */
+    fun hasLocalMatch(track: Track): Boolean =
+        track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && findLocalMatch(track) != null
+
     private fun playQq(track: Track) {
         viewModelScope.launch {
             _networkMessage.value = "正在解析 QQ 播放地址…"
