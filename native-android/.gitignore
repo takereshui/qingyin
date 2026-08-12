@@ -4,10 +4,8 @@ app/build/
 local.properties
 *.keystore
 *.jks
-*.p12
 *.apk
 *.aab
 .idea/
 *.iml
 build-failure.log
-signing.properties
