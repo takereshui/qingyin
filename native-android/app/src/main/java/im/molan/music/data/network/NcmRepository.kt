@@ -88,6 +88,10 @@ class NcmRepository(
 
     private suspend fun resolveRemote(settings: AppSettings, track: Track, allowFallback: Boolean): Track = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
+        // 已由接口确认过的地址直接复用；下载仍严格要求与当前档位一致。
+        val reusable = track.remoteUrl?.takeIf { it.startsWith("https://") } != null &&
+            if (allowFallback) track.resolvedQuality != null else track.resolvedQuality == settings.quality
+        if (reusable) return@withContext track
         val id = track.id.removePrefix("ncm:")
         val qualityOrder = listOf(
             AppSettings.Quality.JYMASTER,

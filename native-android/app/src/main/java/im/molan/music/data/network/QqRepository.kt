@@ -6,9 +6,6 @@ import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -49,10 +46,15 @@ class QqRepository(
                 )
             }
         }
-        // ChKSz 搜索结果不返回专辑 MID；用 QQ 官方单曲元数据补齐受限尺寸的封面。
-        coroutineScope {
-            tracks.map { track -> async { track.copy(artworkUri = qqCover(track.qqMid.orEmpty())) } }.awaitAll()
-        }
+        // ChKSz 搜索结果不返回专辑 MID；一次 QQ 官方搜索请求补齐整页封面，避免逐首网络等待。
+        val covers = qqCovers(keyword, tracks.size)
+        tracks.map { track -> track.copy(artworkUri = covers[track.qqMid]) }
+    }
+
+    /** 下载时优先复用已确认档位的地址，避免同一歌曲重复请求 QQ API。 */
+    suspend fun resolveDownload(settings: AppSettings, track: Track): Track {
+        if (track.remoteUrl?.startsWith("https://") == true && track.resolvedQqQuality == settings.qqQuality) return track
+        return resolve(settings, track).track
     }
 
     suspend fun resolve(settings: AppSettings, track: Track): ResolvedQqTrack = withContext(Dispatchers.IO) {
@@ -157,21 +159,29 @@ class QqRepository(
         )
     }
 
-    private fun qqCover(songMid: String): Uri? {
-        if (songMid.isBlank()) return null
-        return runCatching {
-            val url = "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg".toHttpUrl().newBuilder()
-                .addQueryParameter("songmid", songMid)
-                .addQueryParameter("format", "json")
-                .build()
-            client.newCall(Request.Builder().url(url).header("Referer", "https://y.qq.com/").header("User-Agent", "Mozilla/5.0").get().build()).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val albumMid = JSONObject(response.body?.string().orEmpty())
-                    .optJSONArray("data")?.optJSONObject(0)?.optJSONObject("album")?.optString("mid").orEmpty()
-                albumMid.takeIf(String::isNotBlank)?.let { Uri.parse("https://y.gtimg.cn/music/photo_new/T002R300x300M000$it.jpg") }
+    private fun qqCovers(keyword: String, limit: Int): Map<String, Uri> = runCatching {
+        val url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp".toHttpUrl().newBuilder()
+            .addQueryParameter("p", "1")
+            .addQueryParameter("n", limit.coerceIn(1, 50).toString())
+            .addQueryParameter("w", keyword)
+            .addQueryParameter("format", "json")
+            .build()
+        client.newCall(Request.Builder().url(url).header("Referer", "https://y.qq.com/").header("User-Agent", "Mozilla/5.0").get().build()).execute().use { response ->
+            if (!response.isSuccessful) return@use emptyMap()
+            val rows = JSONObject(response.body?.string().orEmpty())
+                .optJSONObject("data")?.optJSONObject("song")?.optJSONArray("list") ?: JSONArray()
+            buildMap {
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    val songMid = row.optString("songmid")
+                    val albumMid = row.optString("albummid")
+                    if (songMid.isNotBlank() && albumMid.isNotBlank()) {
+                        put(songMid, Uri.parse("https://y.gtimg.cn/music/photo_new/T002R300x300M000$albumMid.jpg"))
+                    }
+                }
             }
-        }.getOrNull()
-    }
+        }
+    }.getOrDefault(emptyMap())
 
     private fun requestChksz(settings: AppSettings, parameters: Map<String, String>): JSONObject {
         require(settings.chkszApiKey.isNotBlank()) { "请先在设置中填写 ChKSz API Key 后使用 QQ 音乐" }

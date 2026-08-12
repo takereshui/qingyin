@@ -29,9 +29,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val localRepository = LocalMusicRepository(application)
@@ -430,42 +436,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(ncmCookie = "", ncmNickname = "", ncmUserId = 0L) }
     }
 
-    /** 将线上歌单的曲目按当前音质逐首加入系统下载队列，下载完成后即作为本地音乐可播放。 */
+    /**
+     * 批量同步采用 6 路受控并发：有已确认直链时立即入队，只有缺少直链的曲目才请求解析接口。
+     * 这样不会因逐首等待网络而阻塞整张歌单，同时避免过高并发触发音源服务限流。
+     */
     fun syncPlaylistToLocal(playlist: PlaylistSummary) {
         if (playlist.source == Track.Source.LOCAL) return
         viewModelScope.launch {
-            _playlistMessage.value = "正在同步《${playlist.name}》到本地…"
-            val detail = runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
-                .getOrElse { error ->
-                    _playlistMessage.value = "歌单同步失败：${error.message ?: "无法读取歌单曲目"}"
-                    return@launch
-                }
-            var queued = 0
-            var failed = 0
-            detail.tracks.forEachIndexed { index, track ->
-                _playlistMessage.value = "正在同步 ${index + 1}/${detail.tracks.size}：${track.title}"
-                val downloadable = runCatching {
-                    when (track.source) {
-                        Track.Source.QQ -> qqRepository.resolve(settings.value, track).track
-                        Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
-                        else -> requireNotNull(track.remoteUrl) { "没有在线音源" }.let { track }
+            _playlistMessage.value = "正在准备同步《${playlist.name}》…"
+            val detail = _playlistDetail.value?.takeIf { it.summary.id == playlist.id }
+                ?: playlistRepository.cachedDetail(playlist.id)
+                ?: runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
+                    .getOrElse { error ->
+                        _playlistMessage.value = "歌单同步失败：${error.message ?: "无法读取歌单曲目"}"
+                        return@launch
                     }
-                }.getOrNull()
-                if (downloadable?.remoteUrl.isNullOrBlank()) {
-                    failed++
-                    return@forEachIndexed
-                }
-                val extension = downloadable.audioExtension?.lowercase()?.replace(Regex("[^a-z0-9]"), "")?.takeIf(String::isNotBlank) ?: "mp3"
-                val quality = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
-                val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
-                runCatching { downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $quality", fileName) }
-                    .onSuccess { queued++ }
-                    .onFailure { failed++ }
+            val tracks = detail.tracks.distinctBy { it.id }
+            if (tracks.isEmpty()) {
+                _playlistMessage.value = "歌单暂无可同步曲目"
+                return@launch
+            }
+            val limit = Semaphore(6)
+            val finished = AtomicInteger(0)
+            val queued = AtomicInteger(0)
+            val failed = AtomicInteger(0)
+            coroutineScope {
+                tracks.map { track ->
+                    async {
+                        limit.withPermit {
+                            val downloadable = runCatching {
+                                when (track.source) {
+                                    Track.Source.QQ -> qqRepository.resolveDownload(settings.value, track)
+                                    Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
+                                    else -> requireNotNull(track.remoteUrl) { "没有在线音源" }.let { track }
+                                }
+                            }.getOrNull()
+                            if (downloadable?.remoteUrl.isNullOrBlank()) {
+                                failed.incrementAndGet()
+                            } else {
+                                val extension = downloadable.audioExtension?.lowercase()?.replace(Regex("[^a-z0-9]"), "")?.takeIf(String::isNotBlank) ?: "mp3"
+                                val quality = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
+                                val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+                                runCatching {
+                                    downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $quality", fileName)
+                                }.onSuccess { queued.incrementAndGet() }.onFailure { failed.incrementAndGet() }
+                            }
+                            val done = finished.incrementAndGet()
+                            if (done == tracks.size || done % 4 == 0) {
+                                _playlistMessage.value = "同步中：${done}/${tracks.size}（已入队 ${queued.get()} 首）"
+                            }
+                        }
+                    }
+                }.awaitAll()
             }
             refreshDownloads()
             _playlistMessage.value = when {
-                queued == detail.tracks.size -> "已将 ${queued} 首歌曲加入本地下载队列"
-                queued > 0 -> "已加入 ${queued} 首；${failed} 首因音质或版权限制未加入"
+                queued.get() == tracks.size -> "已将 ${queued.get()} 首歌曲并发加入本地下载队列"
+                queued.get() > 0 -> "已加入 ${queued.get()} 首；${failed.get()} 首因音质或版权限制未加入"
                 else -> "未能加入下载队列，请检查当前音质设置和音源可用性"
             }
         }
