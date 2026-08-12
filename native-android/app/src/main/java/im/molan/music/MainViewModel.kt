@@ -30,9 +30,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeout
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val localRepository = LocalMusicRepository(application)
@@ -88,6 +94,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _ncmQrLogin = MutableStateFlow(NcmQrLoginState())
     val ncmQrLogin: StateFlow<NcmQrLoginState> = _ncmQrLogin.asStateFlow()
     private var qrLoginJob: Job? = null
+    /** 每次切歌都会更换会话键并取消旧请求，杜绝上一首歌词异步回写到当前界面。 */
+    private var lyricsJob: Job? = null
+    private var activeLyricKey: String = ""
 
     val settings = settingsRepository.settings.stateIn(
         viewModelScope,
@@ -298,7 +307,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val nextIds = (settings.value.importedPlaylistIds + detail.summary.id).distinct()
                     settingsRepository.update { it.copy(importedPlaylistIds = nextIds) }
                     _importedPlaylists.value = (_importedPlaylists.value.filterNot { it.id == detail.summary.id } + detail.summary)
-                    _playlistMessage.value = "已导入：${detail.summary.name}"
+                    persistOnlinePlaylistMetadata(detail)
+                    _playlistMessage.value = "已导入并保存到本地：${detail.summary.name}"
                 }
                 .onFailure { error -> _playlistMessage.value = error.message ?: "歌单导入失败" }
         }
@@ -316,7 +326,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
                 .onSuccess { detail ->
                     _playlistDetail.value = detail
-                    _playlistMessage.value = ""
+                    persistOnlinePlaylistMetadata(detail)
+                    _playlistMessage.value = if (detail.summary.source == Track.Source.LOCAL) "" else "已保存 ${detail.tracks.size} 首曲目到本地歌单缓存；音频不会自动下载"
                 }
                 .onFailure { error ->
                     _playlistMessage.value = if (cached != null) "正在使用本地歌单；同步失败" else error.message ?: "歌单详情加载失败"
@@ -325,6 +336,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closePlaylist() { _playlistDetail.value = null }
+
+    /** 线上歌单曲目加载成功后自动落为本地元数据副本；该操作不请求或下载音频。 */
+    private suspend fun persistOnlinePlaylistMetadata(detail: PlaylistDetail) {
+        if (detail.summary.source == Track.Source.LOCAL) return
+        val localDetail = playlistRepository.syncAsLocalPlaylist(detail)
+        _localPlaylists.value = _localPlaylists.value
+            .filterNot { it.id == localDetail.summary.id } + localDetail.summary
+    }
 
     fun searchOnline(source: Track.Source, keyword: String) {
         if (keyword.isBlank()) return
@@ -355,6 +374,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playDaily(track: Track) = playWithLocalPriority(track, _dailyMessage)
 
     fun playNcm(track: Track) = playWithLocalPriority(track, _networkMessage)
+
+    /**
+     * 歌单中的任意曲目被点击后，整张歌单会成为当前播放队列，并从所点曲目开始。
+     * 每首远程曲目在加入队列前都沿用本地优先规则；解析失败的曲目会跳过且汇总反馈。
+     */
+    fun playPlaylist(tracks: List<Track>, selected: Track) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            _playlistMessage.value = "正在准备 ${tracks.size} 首歌的播放列表…"
+            val resolved = resolvePlaylistQueue(tracks)
+            val startIndex = resolved.indexOfFirst { it.original.id == selected.id }
+            if (startIndex < 0) {
+                _playlistMessage.value = "无法播放《${selected.title}》；该曲目未获取到可用音源"
+                return@launch
+            }
+            val queue = resolved.map { it.playable }
+            playback.playQueue(queue, startIndex)
+            val selectedResolved = resolved[startIndex]
+            if (selectedResolved.localMatch != null) {
+                loadMatchedLyrics(selectedResolved.playable, selected)
+            } else {
+                loadLyrics(selectedResolved.playable)
+            }
+            val skipped = tracks.size - queue.size
+            _playlistMessage.value = buildString {
+                append("正在播放《${selected.title}》 · 已载入 ${queue.size} 首")
+                if (skipped > 0) append(" · 跳过 $skipped 首不可播放曲目")
+            }
+        }
+    }
+
+    private data class PlaylistPlayable(
+        val original: Track,
+        val playable: Track,
+        val localMatch: TrackMatcher.Result? = null,
+    )
+
+    private suspend fun resolvePlaylistQueue(tracks: List<Track>): List<PlaylistPlayable> = coroutineScope {
+        // 地址解析受控为 3 路并发，避免大歌单串行等待或对音乐接口产生突发压力。
+        val resolveLimit = Semaphore(3)
+        tracks.map { track ->
+            async {
+                resolveLimit.withPermit {
+                    runCatching {
+                        withTimeout(25_000L) { resolvePlaylistTrack(track) }
+                    }.getOrNull()
+                }
+            }
+        }.awaitAll().filterNotNull()
+    }
+
+    private suspend fun resolvePlaylistTrack(track: Track): PlaylistPlayable {
+        when (track.source) {
+            Track.Source.LOCAL, Track.Source.DOWNLOADED -> return PlaylistPlayable(track, track)
+            else -> Unit
+        }
+        findLocalMatch(track)?.let { return PlaylistPlayable(track, it.local, it) }
+        val playable = when (track.source) {
+            Track.Source.NETEASE -> ncmRepository.resolvePlayback(settings.value, track)
+            Track.Source.QQ -> qqRepository.resolve(settings.value, track).let { resolved ->
+                if (resolved.lyric.isNotBlank()) lyricsRepository.save(resolved.track, resolved.lyric)
+                resolved.track
+            }
+            else -> track
+        }
+        return PlaylistPlayable(track, playable)
+    }
 
     /**
      * 统一播放入口。远程身份保留给歌词、封面和歌单；只在音频载体层使用可信的本地替代。
@@ -415,13 +501,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && findLocalMatch(track) != null
 
     private fun playQq(track: Track) {
+        beginLyricSession(track)
         viewModelScope.launch {
             _networkMessage.value = "正在解析 QQ 播放地址…"
             runCatching { qqRepository.resolve(settings.value, track) }
                 .onSuccess { resolved ->
                     playback.playQueue(listOf(resolved.track), 0)
-                    _lyrics.value = LrcParser.parse(resolved.lyric)
                     if (resolved.lyric.isNotBlank()) lyricsRepository.save(resolved.track, resolved.lyric)
+                    loadLyrics(resolved.track)
                     _networkMessage.value = "正在播放：${resolved.track.title} · ${resolved.track.resolvedQqQuality?.label ?: "QQ"}"
                 }
                 .onFailure { error -> _networkMessage.value = "QQ 无法播放：${error.message ?: "没有可播放地址"}" }
@@ -443,36 +530,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadLyrics(track: Track) {
+    /** 在任何播放入口切歌前立即清空上一首歌词，并创建新的受控歌词会话。 */
+    private fun beginLyricSession(track: Track): String {
+        lyricsJob?.cancel()
+        val key = "${track.source.name}:${track.id}:${System.nanoTime()}"
+        activeLyricKey = key
         _lyrics.value = emptyList()
-        viewModelScope.launch {
+        return key
+    }
+
+    /** 供全屏播放器在切歌后重新确保当前曲目的歌词会话已建立。 */
+    fun ensureLyricsForCurrent(track: Track) {
+        if (!activeLyricKey.startsWith("${track.source.name}:${track.id}:")) loadLyrics(track)
+    }
+
+    private fun loadLyrics(track: Track) {
+        val key = beginLyricSession(track)
+        lyricsJob = viewModelScope.launch {
             val cached = runCatching { lyricsRepository.cached(track) }.getOrNull()
-            if (cached != null) _lyrics.value = cached
+            if (activeLyricKey == key && cached != null) _lyrics.value = cached
+            // QQ 歌词由 QQ 解析结果直接缓存；不再错误地经网易云搜索刷新。
+            if (track.source == Track.Source.QQ) return@launch
             // 先显示本地歌词，再静默向线上同步；网络失败时继续使用本地结果。
             runCatching { lyricsRepository.refresh(settings.value, track) }
                 .onSuccess { refreshed ->
-                    if (refreshed.isNotEmpty() || cached == null) _lyrics.value = refreshed
+                    if (activeLyricKey == key && (refreshed.isNotEmpty() || cached == null)) _lyrics.value = refreshed
                 }
                 .onFailure {
-                    if (cached == null) _lyrics.value = emptyList()
+                    if (activeLyricKey == key && cached == null) _lyrics.value = emptyList()
                 }
         }
     }
 
     /** 本地音源命中线上曲目时，先读本地文件/下载记录关联的歌词缓存，再回退线上刷新。 */
     private fun loadMatchedLyrics(local: Track, remote: Track) {
-        _lyrics.value = emptyList()
-        viewModelScope.launch {
+        // 会话按实际播放的本地音源绑定；远程身份仅用于读取/刷新对应歌词。
+        val key = beginLyricSession(local)
+        lyricsJob = viewModelScope.launch {
             val localCached = runCatching { lyricsRepository.cached(local) }.getOrNull()
             val remoteCached = runCatching { lyricsRepository.cached(remote) }.getOrNull()
             val initial = localCached?.takeIf { it.isNotEmpty() } ?: remoteCached
-            if (initial != null) _lyrics.value = initial
+            if (activeLyricKey == key && initial != null) _lyrics.value = initial
+            // QQ 的歌词使用其原始缓存，不能混入网易云歌词链路。
+            if (remote.source == Track.Source.QQ) return@launch
             runCatching { lyricsRepository.refresh(settings.value, remote) }
                 .onSuccess { refreshed ->
-                    if (refreshed.isNotEmpty() || initial == null) _lyrics.value = refreshed
+                    if (activeLyricKey == key && (refreshed.isNotEmpty() || initial == null)) _lyrics.value = refreshed
                 }
                 .onFailure {
-                    if (initial == null) _lyrics.value = emptyList()
+                    if (activeLyricKey == key && initial == null) _lyrics.value = emptyList()
                 }
         }
     }
@@ -560,46 +666,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 将歌单中尚未严格匹配到本地音源的在线曲目批量解析并加入内置下载队列。 */
+    fun enqueueMissingPlaylistTracks(tracks: List<Track>) {
+        val targets = tracks.filter { track ->
+            track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && !hasLocalMatch(track)
+        }
+        if (targets.isEmpty()) {
+            _playlistMessage.value = "该歌单的曲目均已在本地可用，无需下载"
+            return
+        }
+        viewModelScope.launch {
+            _playlistMessage.value = "正在解析 ${targets.size} 首未本地匹配歌曲的下载音源…"
+            val resolveLimit = Semaphore(3)
+            val outcomes = coroutineScope {
+                targets.map { track ->
+                    async {
+                        resolveLimit.withPermit {
+                            runCatching {
+                                withTimeout(25_000L) { resolveDownloadTrack(track) }
+                            }.mapCatching(::enqueueResolvedDownload)
+                        }
+                    }
+                }.awaitAll()
+            }
+            val added = outcomes.count { it.getOrNull()?.added == true }
+            val existing = outcomes.count { it.getOrNull()?.added == false }
+            val failed = outcomes.count { it.isFailure }
+            refreshDownloads()
+            _playlistMessage.value = buildString {
+                append("批量下载已处理 ${targets.size} 首：新增 $added 首")
+                if (existing > 0) append("，$existing 首已在下载队列或本地下载记录中")
+                if (failed > 0) append("，$failed 首解析失败")
+            }
+            _downloadActionMessage.value = if (failed == 0) "歌单下载任务已加入内置队列" else "部分歌单曲目未能解析，请在下载页查看任务"
+        }
+    }
+
     fun enqueueDownload(track: Track) {
         viewModelScope.launch {
             val requestedQuality = if (track.source == Track.Source.QQ) settings.value.qqQuality.label else settings.value.quality.label
             _networkMessage.value = "正在按 $requestedQuality 解析下载音源…"
             _downloadMessage.value = "正在创建《${track.title}》下载任务…"
             _downloadActionMessage.value = "正在解析下载音源…"
-            val resolved = runCatching {
-                when (track.source) {
-                    Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
-                    Track.Source.QQ -> qqRepository.resolve(settings.value, track).track
-                    else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
-                }
-            }
-            resolved.onSuccess { downloadable ->
-                val extension = downloadable.audioExtension
-                    ?.lowercase()
-                    ?.replace(Regex("[^a-z0-9]"), "")
-                    ?.takeIf(String::isNotBlank)
-                    ?: "mp3"
-                val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
-                val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
-                runCatching {
-                    downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $qualityLabel", fileName)
-                }.onSuccess {
-                    _networkMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
-                    _downloadMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
-                    _downloadActionMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
+            runCatching {
+                withTimeout(25_000L) { resolveDownloadTrack(track) }
+            }.mapCatching(::enqueueResolvedDownload)
+                .onSuccess { result ->
+                    val text = if (result.added) "已加入下载：${track.title} · $requestedQuality" else "下载任务已存在：${track.title}"
+                    _networkMessage.value = text
+                    _downloadMessage.value = text
+                    _downloadActionMessage.value = text
                     refreshDownloads()
-                }.onFailure { error ->
-                    val text = "创建下载失败：${error.message ?: "系统下载服务不可用"}"
+                }
+                .onFailure { error ->
+                    val text = "下载解析失败：${error.message ?: "无法获取所选音质的下载地址"}"
                     _networkMessage.value = text
                     _downloadMessage.value = text
                     _downloadActionMessage.value = text
                 }
-            }.onFailure { error ->
-                val text = error.message ?: "无法获取所选音质的下载地址"
-                _networkMessage.value = text
-                _downloadMessage.value = text
-            }
         }
+    }
+
+    private suspend fun resolveDownloadTrack(track: Track): Track = when (track.source) {
+        Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
+        Track.Source.QQ -> qqRepository.resolveDownload(settings.value, track)
+        else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
+    }
+
+    private fun enqueueResolvedDownload(downloadable: Track): DownloadRepository.EnqueueResult {
+        val extension = downloadable.audioExtension
+            ?.lowercase()
+            ?.replace(Regex("[^a-z0-9]"), "")
+            ?.takeIf(String::isNotBlank)
+            ?: "mp3"
+        val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
+        val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+        return downloadRepository.enqueueIfAbsent(
+            requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
+            downloadable.title,
+            "${downloadable.artist} · $qualityLabel",
+            fileName,
+        )
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {

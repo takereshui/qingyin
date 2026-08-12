@@ -216,6 +216,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                 if (playlistDetail != null) {
                     PlaylistDetailScreen(
                         detail = playlistDetail!!,
+                        message = playlistMessage,
                         model = model,
                         onBack = model::closePlaylist,
                     )
@@ -575,7 +576,7 @@ private fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
 }
 
 @Composable
-private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, onBack: () -> Unit) {
+private fun PlaylistDetailScreen(detail: PlaylistDetail, message: String, model: MainViewModel, onBack: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -601,6 +602,26 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
                     }
                 }
             }
+            val missingLocalCount = detail.tracks.count { track ->
+                track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && !model.hasLocalMatch(track)
+            }
+            FilledTonalButton(
+                onClick = { model.enqueueMissingPlaylistTracks(detail.tracks) },
+                enabled = missingLocalCount > 0,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            ) {
+                Icon(Icons.Default.Download, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (missingLocalCount > 0) "下载未本地曲目（$missingLocalCount）" else "所有曲目均已在本地可用")
+            }
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                )
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             if (detail.tracks.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -610,7 +631,7 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
                         TrackRow(
                             track = track,
                             matchedLocal = model.hasLocalMatch(track),
-                            onClick = { model.playOnline(track) },
+                            onClick = { model.playPlaylist(detail.tracks, track) },
                         )
                     }
                 }
@@ -940,6 +961,8 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
     var sliderValue by remember(current.id) { mutableStateOf(0f) }
     var isSeeking by remember(current.id) { mutableStateOf(false) }
 
+    // 播放器队列切歌时同步切换歌词会话，绝不继续保留上一首的歌词。
+    LaunchedEffect(current.id, current.source) { model.ensureLyricsForCurrent(current) }
     LaunchedEffect(snapshot.positionMs, duration, isSeeking) {
         if (!isSeeking) sliderValue = (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     }

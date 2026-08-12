@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 队列、URL 与状态均持久化；应用重启后会自动继续尚未完成的任务。
  */
 class DownloadRepository(private val context: Context) {
+    data class EnqueueResult(val id: Long, val added: Boolean)
+
     private data class Task(
         val id: Long,
         val title: String,
@@ -66,24 +68,41 @@ class DownloadRepository(private val context: Context) {
             }
     }
 
-    fun enqueue(url: String, title: String, artist: String, fileName: String): Long {
+    fun enqueue(url: String, title: String, artist: String, fileName: String): Long =
+        enqueueIfAbsent(url, title, artist, fileName).id
+
+    /** 相同标题和艺人的下载任务（包括已完成/排队/失败）只保留一条，避免歌单批量下载重复入队。 */
+    fun enqueueIfAbsent(url: String, title: String, artist: String, fileName: String): EnqueueResult {
         require(url.startsWith("https://") || url.startsWith("http://")) { "下载地址无效" }
-        val id = nextId.incrementAndGet()
-        val safeName = fileName
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            .take(120)
-            .ifBlank { "轻音下载" }
-        val task = Task(
-            id = id,
-            title = title.ifBlank { "轻音下载" },
-            artist = artist,
-            url = url,
-            fileName = "$id-$safeName",
-            status = DownloadEntry.Status.QUEUED,
-        )
-        addTask(task)
-        schedule(id)
-        return id
+        val cleanTitle = title.ifBlank { "轻音下载" }
+        val identity = downloadIdentity(cleanTitle, artist)
+        var created: Task? = null
+        val result = synchronized(stateLock) {
+            val existing = _tasks.value.firstOrNull { downloadIdentity(it.title, it.artist) == identity }
+            if (existing != null) {
+                EnqueueResult(existing.id, added = false)
+            } else {
+                val id = nextId.incrementAndGet()
+                val safeName = fileName
+                    .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                    .take(120)
+                    .ifBlank { "轻音下载" }
+                val task = Task(
+                    id = id,
+                    title = cleanTitle,
+                    artist = artist,
+                    url = url,
+                    fileName = "$id-$safeName",
+                    status = DownloadEntry.Status.QUEUED,
+                )
+                _tasks.value = _tasks.value + task
+                persistLocked()
+                created = task
+                EnqueueResult(id, added = true)
+            }
+        }
+        created?.let { schedule(it.id) }
+        return result
     }
 
     fun retry(id: Long) {
@@ -158,6 +177,9 @@ class DownloadRepository(private val context: Context) {
             updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED) }
         }
     }
+
+    private fun downloadIdentity(title: String, artist: String): String =
+        "${title.trim().lowercase()}|${artist.substringBefore(" · ").trim().lowercase()}"
 
     private fun addTask(task: Task) = synchronized(stateLock) {
         _tasks.value = (_tasks.value.filterNot { it.id == task.id } + task)
