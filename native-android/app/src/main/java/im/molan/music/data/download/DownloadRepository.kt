@@ -44,8 +44,8 @@ class DownloadRepository(private val context: Context) {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queueLimit = Semaphore(3)
@@ -145,34 +145,39 @@ class DownloadRepository(private val context: Context) {
         runCatching {
             updateTask(initial.copy(status = DownloadEntry.Status.DOWNLOADING, bytesDownloaded = 0L, totalBytes = 0L))
             partFile.delete()
-            client.newCall(Request.Builder().url(initial.url).get().build()).execute().use { response ->
-                require(response.isSuccessful) { "下载 HTTP ${response.code}" }
+            val request = Request.Builder()
+                .url(initial.url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                require(response.isSuccessful) { "下载失败 (HTTP ${response.code})" }
                 val body = requireNotNull(response.body) { "下载响应为空" }
-                val total = body.contentLength().coerceAtLeast(0L)
+                val total = body.contentLength().let { if (it <= 0L) 0L else it }
                 var downloaded = 0L
                 var lastReported = 0L
                 body.byteStream().use { input ->
-                    FileOutputStream(partFile).use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    java.io.BufferedOutputStream(FileOutputStream(partFile)).use { output ->
+                        val buffer = ByteArray(64 * 1024) // 增大缓冲区至 64KB
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             output.write(buffer, 0, count)
                             downloaded += count
-                            if (downloaded - lastReported >= 256 * 1024L || (total > 0L && downloaded == total)) {
+                            if (downloaded - lastReported >= 512 * 1024L || (total > 0L && downloaded == total)) {
                                 lastReported = downloaded
                                 updateTask(id) { it.copy(status = DownloadEntry.Status.DOWNLOADING, bytesDownloaded = downloaded, totalBytes = total) }
                             }
                         }
-                        output.fd.sync()
+                        output.flush()
                     }
                 }
-                require(downloaded > 0L) { "下载文件为空" }
+                require(downloaded > 0L) { "下载文件内容为空" }
                 if (finalFile.exists()) finalFile.delete()
-                require(partFile.renameTo(finalFile)) { "无法写入下载文件" }
+                require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
                 updateTask(id) { it.copy(status = DownloadEntry.Status.COMPLETED, bytesDownloaded = downloaded, totalBytes = if (total > 0L) total else downloaded) }
             }
-        }.onFailure {
+        }.onFailure { error ->
             partFile.delete()
             updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED) }
         }
