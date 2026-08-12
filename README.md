@@ -1,56 +1,48 @@
-# Molan Light Music
+# 轻音
 
-Molan Light Music 是一个无广告、以本地音乐优先播放为核心的 Android 音乐客户端。它使用 WebView 承载轻量前端，并通过定制的 `goapk` 原生运行时实现系统下载、本地媒体扫描、Android 原生本地播放器、媒体会话和沉浸式界面。
+轻音是一个无广告、本地音乐优先的 Android 音乐客户端。当前主线是独立的 **Kotlin 原生 Android 实现**：Jetpack Compose 负责界面，Media3 ExoPlayer 与 `MediaSessionService` 负责唯一播放队列、后台播放、锁屏、通知栏和蓝牙媒体控制。应用不再以 WebView 或 HTMLAudioElement 作为播放运行时。[1] [2]
 
-当前源码快照对应 **1.3.15（versionCode 19）**。该版本包含网易云 NCMC 登录、APK 内独立 QQ 音乐 QR 登录、网易云/QQ 歌单合并、ChKSz QQ MID 音源解析、歌词缓存、本地优先播放，以及可操作的播放队列、列表循环、单曲循环和带历史回退的随机播放。QQ 授权会合并 `check_sig` 重定向链 Cookie，并在 `p_skey` 缺失时继续完成兼容授权交换；播放器使用加载令牌消除连续切歌时被中断的 `play()` 竞态。
+当前原生快照对应 **2.0.0-native（versionCode 20）**，显示名称为“轻音”，包名保持 `im.molan.music`，以支持从旧版本覆盖升级。
 
-> QQ 登录与歌单读取依赖 QQ 音乐非公开网络交互，可能受上游策略影响。本项目仅供用户登录自己的账户、读取个人歌单及播放有合法收听权限的内容；不得用于绕过会员、付费或版权限制。
+> 原生版优先保证播放性能和本地音乐体验。网易云搜索、歌词、播放 URL、DownloadManager 下载与二维码登录已迁移到 Kotlin；QQ 音乐登录依赖不稳定的上游非公开网页登录流程，当前不会在原生主线伪造为可用功能。
 
 ## 目录
 
 | 目录 | 说明 |
 |---|---|
-| `app/` | 纯 HTML/CSS/JavaScript 音乐应用与本地资源。 |
-| `goapk/` | 定制 APK 构建器及 Android 原生运行时；`java/QQMusicSession.java` 提供 APK 内 QQ 会话能力。 |
-| `tests/` | 本地匹配、扫描缓存、原生本地播放器和 QQ 集成回归测试。 |
-| `docs/` | 独立 QQ 登录、音源定位与接口调研说明。 |
+| `native-android/` | 当前 Kotlin 原生主线。包含 Compose 界面、Media3 播放服务、本地扫描、SAF、系统下载、歌词、NCMC 搜索与网易云二维码登录。 |
+| `legacy-webview/app/` | 历史 WebView 前端快照，仅用于回溯旧实现和迁移对照，不是 2.0 的运行时。 |
+| `legacy-webview/goapk/` | 历史 goapk 定制运行时与 Java 原生桥接。 |
+| `legacy-webview/tests/` | 历史 WebView 版本的回归测试。 |
+| `docs/` | 原生迁移与历史设计说明。 |
 
-## 构建
+## 原生构建
 
-构建依赖 Go、JDK 8 兼容编译器、Android `android.jar`、D8 和 `apksigner`。本仓库不提交生成的 `classes.dex`、`goapk` 二进制或 APK。
-
-```bash
-cd goapk
-rm -rf /tmp/goapk-javac /tmp/goapk-dex
-mkdir -p /tmp/goapk-javac /tmp/goapk-dex
-
-javac --release 8 -classpath "$HOME/.goapk/android.jar" \
-  -d /tmp/goapk-javac java/*.java
-java -cp "$HOME/.goapk/r8.jar" com.android.tools.r8.D8 \
-  --release --min-api 24 --lib "$HOME/.goapk/android.jar" \
-  --output /tmp/goapk-dex/ /tmp/goapk-javac/com/zapstore/goapk/runtime/*.class
-cp /tmp/goapk-dex/classes.dex internal/embed/classes.dex
-
-make build
-./goapk build -s ../app \
-  --package im.molan.music --name "Molan Light Music" \
-  --version-code 19 --version-name "1.3.15" \
-  ../molan-light-music.apk
-apksigner verify --verbose --min-sdk-version 24 ../molan-light-music.apk
-```
-
-## 测试
+原生工程需要 Android SDK 35、JDK 17 和 Gradle Wrapper。普通 Debug 构建可以直接执行：
 
 ```bash
-node tests/test_local_match.cjs
-node tests/test_local_scan_cache.cjs
-node tests/test_native_local_player.cjs
-node tests/test_qq_integration.cjs
-node tests/test_player_queue.cjs
+cd native-android
+export JAVA_HOME=/path/to/jdk-17
+export ANDROID_HOME=/path/to/android-sdk
+./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
 ```
 
-## QQ 登录与接口边界
+若需要覆盖升级旧版 `im.molan.music`，必须使用与旧 APK 相同的签名密钥；密钥仅通过本地属性传入，绝不提交到仓库：
 
-QQ 二维码、会话轮询、加密 Cookie 保存与“我的歌单”读取均由 Android 原生层完成。原始 QQ Cookie 不会返回给网页 JavaScript；只会加密保存到 Android Keystore 保护的应用私有存储。QQ 歌曲播放、下载和 LRC 使用用户在应用设置中填写的 ChKSz API Key 按 MID 解析。
+```bash
+./gradlew --no-daemon \
+  -Pqingyin.legacy.keystore=/安全路径/legacy-debug.keystore \
+  :app:testDebugUnitTest :app:assembleDebug
+```
 
-本项目没有复制 `l-1124/QQMusicApi` 的 GPLv3 源码，仅对其公开能力模型进行调研。具体设计与许可证说明见 [`docs/MOLAN_V1.3.13_EMBEDDED_QQ_LOGIN.md`](docs/MOLAN_V1.3.13_EMBEDDED_QQ_LOGIN.md)。
+APK 输出在 `native-android/app/build/outputs/apk/debug/app-debug.apk`。原生迁移范围、验证结果、QQ 兼容降级和真机验收清单见 [`docs/QINGYIN_2.0_NATIVE_MIGRATION.md`](docs/QINGYIN_2.0_NATIVE_MIGRATION.md)。
+
+## 许可证边界
+
+项目未复制 rRemix/APlayer 或其他 GPL 音乐播放器的源代码。其架构仅作为调研参考；当前 Kotlin 原生实现独立使用 AndroidX Media3、Compose 与系统 API。[1] [2]
+
+## 参考
+
+[1] [Android Developers：MediaSessionService 后台播放](https://developer.android.com/media/media3/session/background-playback)
+
+[2] [Android Developers：Media3 ExoPlayer 入门](https://developer.android.com/media/media3/exoplayer/hello-world)

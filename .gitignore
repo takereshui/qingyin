@@ -30,3 +30,10 @@ session*.json
 # Logs and screenshots
 *.log
 screenshots/
+
+# Kotlin / Android local state
+.kotlin/
+**/.kotlin/
+local.properties
+**/local.properties
+*.p12
