@@ -1,0 +1,32 @@
+# Android / goapk build artifacts
+*.apk
+*.aab
+*.dex
+goapk/goapk
+goapk/internal/embed/classes.dex
+
+# Local toolchains and build output
+.gradle/
+build/
+dist/
+out/
+.tmp/
+tmp/
+
+# Runtime session / secrets
+.env
+.env.*
+*.keystore
+*.jks
+cookies*.json
+session*.json
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs and screenshots
+*.log
+screenshots/

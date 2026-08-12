@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <meta name="theme-color" content="#74142f" />
+  <title>轻音</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="app-header">
+      <button id="btn-home" class="header-menu" aria-label="回到首页">☰</button>
+      <div class="app-title" aria-label="轻音音乐"><strong>轻音</strong><span>音乐</span></div>
+      <button id="btn-open-search" class="header-search" aria-label="搜索">⌕</button>
+      <button id="btn-account" class="header-avatar" aria-label="账号">人</button>
+    </header>
+
+    <main id="main-scroll" class="main-scroll">
+      <section id="view-home" class="view active">
+        <div class="hero-panel"><div class="hero-copy"><span class="kicker">MOLAN MUSIC</span><h1>只为好音乐<br />留出一点时间</h1><p id="home-greeting">登录后，开启你的专属推荐</p><button id="btn-home-daily" class="hero-button">播放每日推荐</button></div><div class="hero-disc"><span>♪</span></div></div>
+        <div class="section-head"><h2>快捷入口</h2></div>
+        <div class="quick-grid quick-grid-simple"><button id="btn-quick-local" class="quick-card local"><span>本地</span><strong>本地音乐</strong><small>扫描音乐文件夹</small></button><button id="btn-quick-download" class="quick-card download"><span>下载</span><strong>下载管理</strong><small>离线也能听</small></button></div>
+        <div class="section-head"><h2>每日推荐</h2><button id="btn-refresh-home" class="text-link">换一批</button></div>
+        <div id="home-daily-list" class="track-list"></div><p id="home-daily-empty" class="placeholder">登录后获取你的每日推荐</p>
+        <div class="section-head"><h2>推荐歌单</h2><button class="text-link" data-route="discover">更多</button></div><div id="home-playlists" class="cover-row"></div>
+      </section>
+
+      <section id="view-discover" class="view">
+        <div class="discover-top"><h1>发现</h1><button id="btn-discover-refresh" class="circle-action" aria-label="刷新发现">↻</button></div>
+        <div class="discover-search"><span>⌕</span><input id="input-search" type="search" placeholder="搜索音乐、歌手、专辑" enterkeyhint="search" /><button id="btn-search" aria-label="搜索">搜索</button></div>
+        <div id="search-result" class="search-result hidden"><div class="section-head"><h2>搜索结果</h2><button id="btn-close-search" class="text-link">收起</button></div><div id="search-list" class="track-list"></div><p id="search-empty" class="placeholder"></p></div>
+        <div id="discover-content"><div class="section-head"><h2>榜单精选</h2></div><div id="discover-toplists" class="rank-row"></div><div class="section-head"><h2>热门歌单</h2></div><div id="discover-playlists" class="cover-grid"></div><div class="section-head"><h2>新碟上架</h2></div><div id="discover-albums" class="cover-row"></div><div class="section-head"><h2>热门歌手</h2></div><div id="discover-artists" class="artist-row"></div></div>
+      </section>
+
+      <section id="view-local" class="view">
+        <div class="page-top"><div><p class="kicker dark">你的设备</p><h1>本地音乐</h1><p id="local-summary" class="subline">系统音乐库与已授权的文件夹</p></div><button id="btn-local-scan" class="primary-pill">扫描</button></div>
+        <div class="local-action-card"><div class="local-action-icon">▣</div><div><strong>系统音乐库</strong><p>扫描设备已索引的音乐与音频文件</p></div></div>
+        <div class="section-head compact"><h2>自定义文件夹</h2><button id="btn-add-folder" class="text-link">添加文件夹</button></div><div id="custom-folders" class="folder-chips"></div><p id="custom-folders-empty" class="small-hint">尚未添加自定义文件夹</p>
+        <div class="section-head"><h2>扫描到的歌曲</h2><span id="local-count" class="count-label">0 首</span></div><div id="local-list" class="track-list"></div><p id="local-empty" class="placeholder">点击“扫描”并允许音乐权限后开始显示本地歌曲</p>
+      </section>
+
+      <section id="view-downloads" class="view">
+        <div class="page-top"><div><p class="kicker dark">离线播放</p><h1>下载管理</h1><p class="subline">统一管理的本地音乐文件</p></div><button id="btn-refresh-downloads" class="circle-action" aria-label="刷新下载">↻</button></div>
+        <div class="download-directory"><span class="directory-icon">⇩</span><div><strong>Music / Molan Light Music</strong><p>下载位置固定，可在文件管理器中查看</p></div></div><div id="download-list" class="download-list"></div><p id="download-empty" class="placeholder">暂无下载任务<br />在推荐、发现或歌单页长按歌曲即可下载</p>
+      </section>
+
+      <section id="view-library" class="view library-view">
+        <div class="profile-card"><button id="btn-login" class="profile-main"><span id="profile-avatar" class="profile-avatar">♪</span><span><strong id="profile-name">登录网易云账号</strong><small id="profile-desc">同步歌单与每日推荐</small></span><i>›</i></button><div class="profile-actions"><button id="btn-login-qq"><span>Q</span>QQ 登录</button><button id="btn-library-fav"><span>♡</span>我喜欢</button><button id="btn-library-history"><span>◷</span>最近播放</button><button id="btn-library-settings"><span>⚙</span>设置</button></div></div>
+        <div class="section-head library-section-head"><h2>我的歌单</h2><span class="library-head-actions"><button id="btn-library-refresh" class="text-link">刷新</button></span></div><div id="my-playlists" class="library-list"></div><p id="my-playlists-empty" class="placeholder">登录后查看你的网易云歌单</p>
+      </section>
+
+      <section id="view-detail" class="view detail-view"><button id="btn-detail-back" class="detail-back">‹ 返回</button><div id="detail-content"></div></section>
+    </main>
+
+    <section id="mini-player" class="mini-player hidden"><button id="btn-mini-open" class="mini-main"><img id="mini-cover" alt="封面" /><span><strong id="mini-name">未在播放</strong><small id="mini-artist">选择一首歌开始听</small></span></button><button id="btn-mini-play" class="mini-control" aria-label="播放">▶</button><button id="btn-mini-next" class="mini-control" aria-label="下一首">›</button><span id="mini-progress" class="mini-progress"></span></section>
+
+    <nav class="bottom-nav" aria-label="主功能栏"><button class="nav-item active" data-route="home"><span>⌂</span><b>首页</b></button><button class="nav-item" data-route="discover"><span>⌕</span><b>发现</b></button><button class="nav-item" data-route="local"><span>♫</span><b>本地</b></button><button class="nav-item" data-route="downloads"><span>⇩</span><b>下载</b></button><button class="nav-item" data-route="library"><span>人</span><b>我的</b></button></nav>
+
+    <section id="player-full" class="player-full hidden"><div id="player-bg" class="player-bg"></div><header class="player-header"><button id="btn-player-close" class="player-top-btn" aria-label="收起播放器">⌄</button><span>正在播放</span><div class="player-header-actions"><button id="btn-player-view" class="player-top-btn" aria-label="切换黑胶和歌词">词</button><button id="btn-player-fav" class="player-top-btn player-favorite" aria-label="收藏">♡</button></div></header><button id="now-playing" class="now-playing" aria-label="切换到纯歌词"><div class="album-disc"><img id="player-cover" alt="封面" /><span class="disc-center">♪</span></div><div class="player-song"><strong id="player-name">未在播放</strong><span id="player-artist">—</span></div></button><div id="lyric-status" class="lyric-status">选择一首歌开始听</div><div id="lyrics" class="lyrics"><p class="active">暂无歌词</p></div><div class="player-controls"><div class="player-tool-row"><button id="btn-lyric-rematch" class="player-tool" aria-label="重新匹配歌词">译</button><button id="btn-player-fav-secondary" class="player-tool player-favorite" aria-label="收藏">♡</button></div><input id="player-seek" type="range" min="0" max="1000" value="0" /><div class="time-line"><span id="time-current">0:00</span><span id="time-total">0:00</span></div><div class="control-row"><button id="btn-player-mode">↻</button><button id="btn-player-prev">‹</button><button id="btn-player-toggle" class="main-play">▶</button><button id="btn-player-next">›</button><button id="btn-player-queue">☷</button></div></div></section>
+
+    <section id="sheet" class="modal hidden"><div class="sheet-panel"><div class="sheet-title"><h2 id="sheet-title">设置</h2><button id="btn-sheet-close">×</button></div><div id="sheet-content"></div></div></section>
+    <div id="toast" class="toast"></div>
+  </div>
+  <audio id="audio" preload="metadata" playsinline></audio>
+  <script src="js/store.js"></script><script src="js/api.js"></script><script src="js/downloads.js"></script><script src="js/local.js"></script><script src="js/local-lyrics.js"></script><script src="js/music-features.js"></script><script src="js/player.js"></script><script src="js/app.js"></script>
+</body>
+</html>
