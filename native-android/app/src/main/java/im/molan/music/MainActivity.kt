@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Base64
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -163,6 +164,21 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     }
     val customFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let(model::scanCustomFolder)
+    }
+
+    BackHandler(enabled = playlistDetail != null || queueVisible || playerVisible || ncmLoginVisible || settingsVisible || donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible || tab != AppTab.HOME) {
+        when {
+            playlistDetail != null -> model.closePlaylist()
+            queueVisible -> queueVisible = false
+            playerVisible -> playerVisible = false
+            ncmLoginVisible -> { ncmLoginVisible = false; model.cancelNcmQrLogin() }
+            settingsVisible -> settingsVisible = false
+            donateVisible -> donateVisible = false
+            ncmAccountVisible -> ncmAccountVisible = false
+            playlistImportSource != null -> playlistImportSource = null
+            localPlaylistCreateVisible -> localPlaylistCreateVisible = false
+            else -> tab = AppTab.HOME
+        }
     }
 
     LaunchedEffect(Unit) { model.scanLocalMusic(); model.refreshDownloads() }
@@ -330,24 +346,24 @@ private fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, m
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) {
                     Text("下载", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("文件固定保存到 Music/轻音", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("由轻音内置下载器管理，最多同时下载 3 首", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = model::refreshDownloads, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.Refresh, "刷新下载列表") }
             }
         }
         item { Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (entries.isNotEmpty()) {
-            item { Text("系统下载任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-            items(entries, key = DownloadEntry::id) { entry -> DownloadTaskRow(entry) }
+            item { Text("内置下载任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+            items(entries, key = DownloadEntry::id) { entry -> DownloadTaskRow(entry, onRetry = { model.retryDownload(entry.id) }) }
         }
         item { Text("已下载音乐", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
-        if (tracks.isEmpty()) item { EmptyHint("尚未发现已完成的音乐。下载完成后，系统媒体库扫描可能需要数秒。") }
+        if (tracks.isEmpty()) item { EmptyHint("尚未发现已完成的音乐。下载由轻音内置队列直接写入应用下载目录。") }
         else items(tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playDownloaded(track) }) }
     }
 }
 
 @Composable
-private fun DownloadTaskRow(entry: DownloadEntry) {
+private fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit) {
     val progress = if (entry.totalBytes > 0L) (entry.bytesDownloaded.toFloat() / entry.totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
     Card(shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -356,7 +372,11 @@ private fun DownloadTaskRow(entry: DownloadEntry) {
                     Text(entry.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(entry.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = if (entry.status == DownloadEntry.Status.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                if (entry.status == DownloadEntry.Status.FAILED) {
+                    TextButton(onClick = onRetry) { Text("重试") }
+                } else {
+                    Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
             }
             if (entry.status == DownloadEntry.Status.DOWNLOADING || entry.status == DownloadEntry.Status.QUEUED || entry.status == DownloadEntry.Status.PAUSED) {
                 Spacer(Modifier.height(8.dp))
@@ -484,7 +504,7 @@ private fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick:
                 FilledTonalButton(onClick = onSync, modifier = Modifier.fillMaxWidth().height(36.dp)) {
                     Icon(Icons.Default.Download, null, Modifier.size(17.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("同步到本地", style = MaterialTheme.typography.labelMedium)
+                    Text("同步歌单", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -529,7 +549,7 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
                 IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "返回") }
                 Text(detail.summary.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (detail.summary.source != Track.Source.LOCAL) {
-                    IconButton(onClick = { model.syncPlaylistToLocal(detail.summary) }) { Icon(Icons.Default.Download, "同步歌单到本地") }
+                    IconButton(onClick = { model.syncPlaylistToLocal(detail.summary) }) { Icon(Icons.Default.Refresh, "同步歌单数据，不下载音频") }
                 }
                 IconButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Icon(Icons.Default.Refresh, "刷新歌单") }
             }
