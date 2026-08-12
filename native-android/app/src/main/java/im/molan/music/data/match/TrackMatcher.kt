@@ -15,8 +15,8 @@ import kotlin.math.max
 object TrackMatcher {
     /** 常规模糊匹配仅作为严格的双信号兜底，不以低分相似度替代线上音源。 */
     const val ACCEPTANCE_SCORE = 68f
-    private const val LOCAL_DURATION_TOLERANCE_MS = 4_000L
-    private const val DOWNLOADED_DURATION_TOLERANCE_MS = 6_000L
+    /** 时长差超过半秒即视为不同版本，不能触发本地优先播放。 */
+    private const val DURATION_TOLERANCE_MS = 500L
 
     enum class MatchMode {
         TITLE_ARTIST_EXACT,
@@ -133,8 +133,7 @@ object TrackMatcher {
 
     private fun durationCompatible(target: Track, local: Track): Boolean {
         if (target.durationMs <= 0L || local.durationMs <= 0L) return true
-        val tolerance = if (local.source == Track.Source.DOWNLOADED) DOWNLOADED_DURATION_TOLERANCE_MS else LOCAL_DURATION_TOLERANCE_MS
-        return abs(target.durationMs - local.durationMs) <= tolerance
+        return abs(target.durationMs - local.durationMs) <= DURATION_TOLERANCE_MS
     }
 
     private fun optionalScore(a: String, b: String, scorer: (String, String) -> Float): Float? =
