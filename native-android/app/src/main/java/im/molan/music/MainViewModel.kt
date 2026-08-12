@@ -15,6 +15,7 @@ import im.molan.music.data.network.QqRepository
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.data.lyrics.LrcParser
 import im.molan.music.data.lyrics.LyricsRepository
+import im.molan.music.data.match.TrackMatcher
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
@@ -47,6 +48,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _localTracks = MutableStateFlow<List<Track>>(emptyList())
     val localTracks: StateFlow<List<Track>> = _localTracks.asStateFlow()
+    /** 统一歌曲匹配的内存索引：下载音源优先于普通本地扫描结果。 */
+    private var localMatchIndex: Map<String, List<Track>> = emptyMap()
 
     private val _scanMessage = MutableStateFlow("等待扫描本地音乐")
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
@@ -100,6 +103,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _downloads.value = entries
                 val tracks = downloadRepository.downloadedTracks()
                 _downloadedTracks.value = tracks
+                rebuildLocalMatchIndex()
                 _downloadMessage.value = when {
                     entries.any { it.status == DownloadEntry.Status.DOWNLOADING } -> "轻音内置下载器正在下载 ${entries.count { it.status == DownloadEntry.Status.DOWNLOADING }} 个任务"
                     tracks.isNotEmpty() -> "已完成 ${tracks.size} 首下载音乐"
@@ -121,6 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
                 .onSuccess { tracks ->
                     _localTracks.value = tracks
+                    rebuildLocalMatchIndex()
                     _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
                 }
                 .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
@@ -327,25 +332,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else -> runCatching { ncmRepository.search(settings.value, keyword.trim()) }
             }
             result.onSuccess { tracks ->
-                _searchTracks.value = tracks
-                _networkMessage.value = if (tracks.isEmpty()) "未找到相关歌曲" else "找到 ${tracks.size} 首${if (source == Track.Source.QQ) " QQ" else "网易云"}歌曲"
+                val matches = tracks.associateWith(::findLocalMatch)
+                _searchTracks.value = tracks.sortedByDescending { matches[it]?.score ?: -1f }
+                val localReady = matches.values.count { it != null }
+                _networkMessage.value = when {
+                    tracks.isEmpty() -> "未找到相关歌曲"
+                    localReady > 0 -> "找到 ${tracks.size} 首歌曲，其中 ${localReady} 首可直接本地播放"
+                    else -> "找到 ${tracks.size} 首${if (source == Track.Source.QQ) " QQ" else "网易云"}歌曲"
+                }
             }.onFailure { error ->
                 _networkMessage.value = "搜索失败：${error.message ?: if (source == Track.Source.QQ) "QQ API 不可用或未配置 Key" else "NCMC 不可用"}"
             }
         }
     }
 
-    fun playOnline(track: Track) {
+    fun playOnline(track: Track) = playWithLocalPriority(track, _networkMessage)
+
+    /** 每日推荐使用独立提示，避免解析失败时错误信息只出现在搜索页而让用户误以为点击无响应。 */
+    fun playDaily(track: Track) = playWithLocalPriority(track, _dailyMessage)
+
+    fun playNcm(track: Track) = playWithLocalPriority(track, _networkMessage)
+
+    /**
+     * 统一播放入口。远程身份保留给歌词、封面和歌单；只在音频载体层使用可信的本地替代。
+     * 匹配失败时才走 QQ / 网易云解析，因此不会因模糊同名歌曲而误播。
+     */
+    private fun playWithLocalPriority(track: Track, message: MutableStateFlow<String>) {
+        when (track.source) {
+            Track.Source.LOCAL -> { playLocal(track); return }
+            Track.Source.DOWNLOADED -> { playDownloaded(track); return }
+            else -> Unit
+        }
+        val matched = findLocalMatch(track)
+        if (matched != null) {
+            val queue = localPlaybackCandidates()
+            playback.playQueue(queue, queue.indexOfFirst { it.id == matched.local.id }.coerceAtLeast(0))
+            message.value = "本地优先播放：${matched.local.title} · 匹配度 ${matched.score.toInt()}%"
+            // 本地缓存优先；若本地没有歌词，再以线上身份刷新歌词和翻译。
+            loadMatchedLyrics(matched.local, track)
+            return
+        }
         when (track.source) {
             Track.Source.QQ -> playQq(track)
-            else -> playNetease(track, _networkMessage)
+            else -> playNetease(track, message)
         }
     }
 
-    /** 每日推荐使用独立提示，避免解析失败时错误信息只出现在搜索页而让用户误以为点击无响应。 */
-    fun playDaily(track: Track) = playNetease(track, _dailyMessage)
+    private fun localPlaybackCandidates(): List<Track> =
+        (_downloadedTracks.value + _localTracks.value).distinctBy { it.id }
 
-    fun playNcm(track: Track) = playNetease(track, _networkMessage)
+    private fun rebuildLocalMatchIndex() {
+        localMatchIndex = localPlaybackCandidates()
+            .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
+            .groupBy({ it.first }, { it.second })
+    }
+
+    private fun findLocalMatch(remote: Track): TrackMatcher.Result? {
+        val candidates = TrackMatcher.indexKeys(remote)
+            .flatMap { key -> localMatchIndex[key].orEmpty() }
+            .distinctBy { it.id }
+        return TrackMatcher.findBest(remote, candidates)
+    }
 
     private fun playQq(track: Track) {
         viewModelScope.launch {
@@ -388,6 +435,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 .onFailure {
                     if (cached == null) _lyrics.value = emptyList()
+                }
+        }
+    }
+
+    /** 本地音源命中线上曲目时，先读本地文件/下载记录关联的歌词缓存，再回退线上刷新。 */
+    private fun loadMatchedLyrics(local: Track, remote: Track) {
+        _lyrics.value = emptyList()
+        viewModelScope.launch {
+            val localCached = runCatching { lyricsRepository.cached(local) }.getOrNull()
+            val remoteCached = runCatching { lyricsRepository.cached(remote) }.getOrNull()
+            val initial = localCached?.takeIf { it.isNotEmpty() } ?: remoteCached
+            if (initial != null) _lyrics.value = initial
+            runCatching { lyricsRepository.refresh(settings.value, remote) }
+                .onSuccess { refreshed ->
+                    if (refreshed.isNotEmpty() || initial == null) _lyrics.value = refreshed
+                }
+                .onFailure {
+                    if (initial == null) _lyrics.value = emptyList()
                 }
         }
     }
