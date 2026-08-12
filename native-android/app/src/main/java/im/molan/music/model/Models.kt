@@ -61,15 +61,21 @@ data class AppSettings(
     val darkTheme: Boolean = false,
     val quality: Quality = Quality.EXHIGH,
     val ncmcBaseUrl: String = "https://music.mcseekeri.com",
+    val backupNcmcBaseUrl: String = "",
+    val useBackupNcmc: Boolean = false,
+    val chkszBaseUrl: String = "https://api.chksz.com",
+    val useChkszBackup: Boolean = false,
     val chkszApiKey: String = "",
     val customFolderUri: String = "",
     val ncmCookie: String = "",
     val ncmNickname: String = "",
 ) {
     enum class Quality(val wireValue: String, val label: String) {
-        STANDARD("standard", "标准"),
-        HIGH("higher", "较高"),
-        EXHIGH("exhigh", "超清"),
-        LOSSLESS("lossless", "无损")
+        STANDARD("standard", "标准 · 128K"),
+        HIGH("higher", "较高 · 192K"),
+        EXHIGH("exhigh", "超清 · 320K"),
+        LOSSLESS("lossless", "无损 FLAC"),
+        HIRES("hires", "高解析 Hi-Res"),
+        JYMASTER("jymaster", "极高 JY Master")
     }
 }

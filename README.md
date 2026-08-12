@@ -2,7 +2,7 @@
 
 轻音是一个无广告、本地音乐优先的 Android 音乐客户端。当前主线是独立的 **Kotlin 原生 Android 实现**：Jetpack Compose 负责界面，Media3 ExoPlayer 与 `MediaSessionService` 负责唯一播放队列、后台播放、锁屏、通知栏和蓝牙媒体控制。应用不再以 WebView 或 HTMLAudioElement 作为播放运行时。[1] [2]
 
-当前原生快照对应 **2.0.0-native（versionCode 20）**，显示名称为“轻音”，包名保持 `im.molan.music`，以支持从旧版本覆盖升级。
+当前原生快照对应 **2.0.1-native（versionCode 21）**，显示名称为“轻音”，包名保持 `im.molan.music`，以支持从旧版本覆盖升级。
 
 > 原生版优先保证播放性能和本地音乐体验。网易云搜索、歌词、播放 URL、DownloadManager 下载与二维码登录已迁移到 Kotlin；QQ 音乐登录依赖不稳定的上游非公开网页登录流程，当前不会在原生主线伪造为可用功能。
 
@@ -35,7 +35,7 @@ export ANDROID_HOME=/path/to/android-sdk
   :app:testDebugUnitTest :app:assembleDebug
 ```
 
-APK 输出在 `native-android/app/build/outputs/apk/debug/app-debug.apk`。原生迁移范围、验证结果、QQ 兼容降级和真机验收清单见 [`docs/QINGYIN_2.0_NATIVE_MIGRATION.md`](docs/QINGYIN_2.0_NATIVE_MIGRATION.md)。
+APK 输出在 `native-android/app/build/outputs/apk/debug/app-debug.apk`。原生版已恢复统一音质、封面磁盘缓存、本地歌词匹配缓存、每日推荐、应用内微信/支付宝赞赏，以及 NCMC/ChKSz 私有与备用线路设置。功能恢复说明见 [`docs/QINGYIN_2.0.1_FEATURE_RESTORATION.md`](docs/QINGYIN_2.0.1_FEATURE_RESTORATION.md)。
 
 ## 许可证边界
 

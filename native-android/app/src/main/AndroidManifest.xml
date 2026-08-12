@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:name=".QingyinApplication"
         android:allowBackup="true"
         android:icon="@drawable/ic_qingyin"
         android:label="轻音"

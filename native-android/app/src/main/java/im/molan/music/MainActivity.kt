@@ -79,6 +79,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import im.molan.music.model.AppSettings
@@ -110,6 +114,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val scanMessage by model.scanMessage.collectAsStateWithLifecycle()
     val player by model.playback.snapshot.collectAsStateWithLifecycle()
     val searchTracks by model.searchTracks.collectAsStateWithLifecycle()
+    val dailyTracks by model.dailyTracks.collectAsStateWithLifecycle()
+    val dailyMessage by model.dailyMessage.collectAsStateWithLifecycle()
     val networkMessage by model.networkMessage.collectAsStateWithLifecycle()
     val lyrics by model.lyrics.collectAsStateWithLifecycle()
     val ncmQrLogin by model.ncmQrLogin.collectAsStateWithLifecycle()
@@ -117,6 +123,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     var queueVisible by remember { mutableStateOf(false) }
     var playerVisible by remember { mutableStateOf(false) }
     var ncmLoginVisible by remember { mutableStateOf(false) }
+    var settingsVisible by remember { mutableStateOf(false) }
+    var donateVisible by remember { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
     val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) model.scanLocalMusic()
@@ -127,12 +135,13 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
 
     LaunchedEffect(Unit) { if (model.hasMediaPermission()) model.scanLocalMusic() }
     LaunchedEffect(settings.customFolderUri) { model.restoreCustomFolder(settings.customFolderUri) }
+    LaunchedEffect(settings.ncmCookie, settings.useBackupNcmc) { model.loadDaily() }
 
     MaterialTheme(colorScheme = if (settings.darkTheme) darkWineScheme() else lightWineScheme()) {
         Scaffold(
             topBar = {
                 CenterAlignedTopAppBar(
-                    title = { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("轻音", fontWeight = FontWeight.Bold); Text("原生音乐播放器", style = MaterialTheme.typography.labelSmall) } },
+                    title = { Text("轻音", fontWeight = FontWeight.Bold) },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary),
                 )
             },
@@ -150,31 +159,33 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    AppTab.HOME -> HomeScreen(tracks, searchTracks, networkMessage, model)
+                    AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, searchTracks, networkMessage, model)
                     AppTab.LOCAL -> LocalScreen(tracks, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
                     AppTab.DOWNLOADS -> DownloadsScreen()
-                    AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() })
+                    AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                 }
             }
         }
         if (queueVisible) QueueDialog(player, model, onDismiss = { queueVisible = false })
         if (playerVisible) FullPlayerDialog(player, lyrics, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
+        if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
+        if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
     }
 }
 
 @Composable
-private fun HomeScreen(tracks: List<Track>, searchTracks: List<Track>, networkMessage: String, model: MainViewModel) {
+private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessage: String, searchTracks: List<Track>, networkMessage: String, model: MainViewModel) {
     var query by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.padding(22.dp)) {
-                    Text("不止是网页播放器", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Text("轻松聆听", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(6.dp))
-                    Text("现在开始用原生播放", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
-                    Text("Media3 队列、锁屏控制和后台播放由同一个原生服务管理。")
+                    Text("无广告、无打扰，专注每一首喜欢的歌。")
                 }
             }
         }
@@ -185,6 +196,14 @@ private fun HomeScreen(tracks: List<Track>, searchTracks: List<Track>, networkMe
                 QuickCard("播放队列", "原生管理", Icons.Default.QueueMusic, Modifier.weight(1f))
             }
         }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("每日推荐", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = { model.loadDaily(force = true) }) { Icon(Icons.Default.Refresh, "刷新每日推荐") }
+            }
+        }
+        if (dailyMessage.isNotBlank()) item { Text(dailyMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { TrackRow(it, onClick = { model.playNcm(it) }) }
         item { Text("网易云搜索", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -235,21 +254,22 @@ private fun DownloadsScreen() {
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(Icons.Default.Download, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(12.dp)); Text("系统下载", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp)); Text("新下载固定保存到 Music/轻音。网络歌单迁移完成后可在此查看任务和状态。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp)); Text("新下载固定保存到 Music/轻音，完成后可在系统通知与文件管理器中查看。", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit) {
+private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
             Card(shape = RoundedCornerShape(18.dp)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.AccountCircle, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp)); Column { Text("轻音原生版", fontWeight = FontWeight.Bold); Text("WebView 已退出播放路径", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Spacer(Modifier.width(12.dp)); Column { Text("轻音", fontWeight = FontWeight.Bold); Text("纯净聆听，随心而动", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } }
         }
-        item { SettingRow("深色模式", "原生 Compose 主题", Icons.Default.DarkMode, settings.darkTheme) { model.updateSettings { it.copy(darkTheme = !it.darkTheme) } } }
+        item { SettingRow("深色模式", "", Icons.Default.DarkMode, settings.darkTheme) { model.updateSettings { it.copy(darkTheme = !it.darkTheme) } } }
+        item { FilledTonalButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text("播放、下载与线路设置") } }
         item { Text("播放与下载音质", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         items(AppSettings.Quality.entries) { quality ->
             Card(Modifier.fillMaxWidth().clickable { model.updateSettings { it.copy(quality = quality) } }, colors = CardDefaults.cardColors(containerColor = if (settings.quality == quality) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
@@ -267,8 +287,92 @@ private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: 
                 }
             }
         }
-        item { Text("QQ 音乐登录仍依赖上游非公开 Web 授权，原生版暂不复用不稳定会话；本地播放、网易云搜索与系统下载不受影响。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth()) { Text("赞赏支持") } }
     }
+}
+
+@Composable
+private fun DonateDialog(onDismiss: () -> Unit) {
+    var method by remember { mutableStateOf("wechat") }
+    val context = LocalContext.current
+    val bitmap = remember(method) {
+        runCatching {
+            context.assets.open("donate/$method.jpg").use { stream ->
+                BitmapFactory.decodeStream(stream)?.asImageBitmap()
+            }
+        }.getOrNull()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("赞赏支持") },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = { method = "wechat" }) { Text("微信") }
+                    FilledTonalButton(onClick = { method = "alipay" }) { Text("支付宝") }
+                }
+                Spacer(Modifier.height(14.dp))
+                if (bitmap != null) Image(bitmap, if (method == "wechat") "微信赞赏二维码" else "支付宝赞赏二维码", Modifier.size(230.dp))
+                else Text("二维码资源不可用", color = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.height(8.dp))
+                Text("感谢你的支持", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { FilledTonalButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave: (AppSettings) -> Unit) {
+    var primaryNcm by remember(settings) { mutableStateOf(settings.ncmcBaseUrl) }
+    var backupNcm by remember(settings) { mutableStateOf(settings.backupNcmcBaseUrl) }
+    var useBackupNcm by remember(settings) { mutableStateOf(settings.useBackupNcmc) }
+    var chkszBase by remember(settings) { mutableStateOf(settings.chkszBaseUrl) }
+    var useChkszBackup by remember(settings) { mutableStateOf(settings.useChkszBackup) }
+    var apiKey by remember(settings) { mutableStateOf(settings.chkszApiKey) }
+    var quality by remember(settings) { mutableStateOf(settings.quality) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("播放、下载与线路设置") },
+        text = {
+            LazyColumn(Modifier.height(390.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { Text("统一音质", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+                items(AppSettings.Quality.entries) { option ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { quality = option },
+                        colors = CardDefaults.cardColors(containerColor = if (quality == option) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
+                    ) {
+                        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(option.label, Modifier.weight(1f))
+                            if (quality == option) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                item { Text("网易云私有服务", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+                item { TextField(primaryNcm, { primaryNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("主 NCMC 地址") }, singleLine = true) }
+                item { TextField(backupNcm, { backupNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("备用 NCMC 地址（可选）") }, singleLine = true) }
+                item { SettingRow("使用备用 NCMC", "主线路异常时可手动切换", Icons.Default.Refresh, useBackupNcm) { useBackupNcm = !useBackupNcm } }
+                item { Text("ChKSz 备用线路", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+                item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
+                item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（可选）") }, singleLine = true) }
+                item { SettingRow("使用 ChKSz 备用域名", "切换至 api.chksz.top", Icons.Default.Refresh, useChkszBackup) { useChkszBackup = !useChkszBackup } }
+            }
+        },
+        confirmButton = {
+            FilledTonalButton(onClick = {
+                onSave(settings.copy(
+                    quality = quality,
+                    ncmcBaseUrl = primaryNcm,
+                    backupNcmcBaseUrl = backupNcm,
+                    useBackupNcmc = useBackupNcm,
+                    chkszBaseUrl = chkszBase,
+                    useChkszBackup = useChkszBackup,
+                    chkszApiKey = apiKey,
+                ))
+            }) { Text("保存") }
+        },
+        dismissButton = { FilledTonalButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -277,9 +381,31 @@ private fun SettingRow(title: String, subtitle: String, icon: androidx.compose.u
 }
 
 @Composable
+private fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape) {
+    val context = LocalContext.current
+    val source = track.artworkUri ?: track.uri
+    if (source == null) {
+        Box(modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.primary)
+        }
+    } else {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(source)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(true)
+                .build(),
+            contentDescription = "${track.title} 封面",
+            modifier = modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer),
+        )
+    }
+}
+
+@Composable
 private fun TrackRow(track: Track, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.primary) }
+        CoverArt(track, Modifier.size(46.dp), RoundedCornerShape(10.dp))
         Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium); Text(listOf(track.artist, track.album, formatDuration(track.durationMs)).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Icon(Icons.Default.MoreVert, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -290,7 +416,7 @@ private fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue: 
     val current = snapshot.current ?: return
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 10.dp, vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.primary) }
+            CoverArt(current, Modifier.size(44.dp), RoundedCornerShape(10.dp))
             Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f).clickable(onClick = onOpen)) { Text(current.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold); Text(current.artist, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             IconButton(onClick = model.playback::toggle) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放") }
             IconButton(onClick = model.playback::next) { Icon(Icons.Default.SkipNext, "下一首") }
@@ -384,10 +510,7 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
         onDismissRequest = onDismiss,
         title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    Modifier.size(156.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Default.MusicNote, null, Modifier.size(78.dp), tint = MaterialTheme.colorScheme.primary) }
+                CoverArt(current, Modifier.size(156.dp), CircleShape)
                 Spacer(Modifier.height(14.dp))
                 Text(current.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(current.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

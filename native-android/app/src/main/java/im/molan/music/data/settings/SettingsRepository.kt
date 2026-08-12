@@ -17,6 +17,10 @@ class SettingsRepository(private val context: Context) {
         val darkTheme = booleanPreferencesKey("dark_theme")
         val quality = stringPreferencesKey("quality")
         val ncmcBaseUrl = stringPreferencesKey("ncmc_base_url")
+        val backupNcmcBaseUrl = stringPreferencesKey("backup_ncmc_base_url")
+        val useBackupNcmc = booleanPreferencesKey("use_backup_ncmc")
+        val chkszBaseUrl = stringPreferencesKey("chksz_base_url")
+        val useChkszBackup = booleanPreferencesKey("use_chksz_backup")
         val chkszApiKey = stringPreferencesKey("chksz_api_key")
         val customFolderUri = stringPreferencesKey("custom_folder_uri")
         val ncmCookie = stringPreferencesKey("ncm_cookie")
@@ -29,6 +33,10 @@ class SettingsRepository(private val context: Context) {
             quality = AppSettings.Quality.entries.firstOrNull { it.wireValue == preferences[Keys.quality] }
                 ?: AppSettings.Quality.EXHIGH,
             ncmcBaseUrl = preferences[Keys.ncmcBaseUrl] ?: "https://music.mcseekeri.com",
+            backupNcmcBaseUrl = preferences[Keys.backupNcmcBaseUrl] ?: "",
+            useBackupNcmc = preferences[Keys.useBackupNcmc] ?: false,
+            chkszBaseUrl = preferences[Keys.chkszBaseUrl] ?: "https://api.chksz.com",
+            useChkszBackup = preferences[Keys.useChkszBackup] ?: false,
             chkszApiKey = preferences[Keys.chkszApiKey] ?: "",
             customFolderUri = preferences[Keys.customFolderUri] ?: "",
             ncmCookie = preferences[Keys.ncmCookie] ?: "",
@@ -43,6 +51,10 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.darkTheme] = next.darkTheme
             preferences[Keys.quality] = next.quality.wireValue
             preferences[Keys.ncmcBaseUrl] = next.ncmcBaseUrl.trimEnd('/')
+            preferences[Keys.backupNcmcBaseUrl] = next.backupNcmcBaseUrl.trimEnd('/')
+            preferences[Keys.useBackupNcmc] = next.useBackupNcmc
+            preferences[Keys.chkszBaseUrl] = next.chkszBaseUrl.trimEnd('/')
+            preferences[Keys.useChkszBackup] = next.useChkszBackup
             preferences[Keys.chkszApiKey] = next.chkszApiKey.trim()
             preferences[Keys.customFolderUri] = next.customFolderUri
             preferences[Keys.ncmCookie] = next.ncmCookie

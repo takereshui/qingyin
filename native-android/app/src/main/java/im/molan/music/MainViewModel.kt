@@ -8,9 +8,11 @@ import androidx.lifecycle.viewModelScope
 import im.molan.music.data.download.DownloadRepository
 import im.molan.music.data.local.CustomFolderRepository
 import im.molan.music.data.local.LocalMusicRepository
+import im.molan.music.data.network.DailyRepository
 import im.molan.music.data.network.NcmRepository
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.data.lyrics.LrcParser
+import im.molan.music.data.lyrics.LyricsRepository
 import im.molan.music.model.AppSettings
 import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
@@ -31,6 +33,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val customFolderRepository = CustomFolderRepository(application)
     private val downloadRepository = DownloadRepository(application)
     private val ncmRepository = NcmRepository()
+    private val dailyRepository = DailyRepository(application, ncmRepository)
+    private val lyricsRepository = LyricsRepository(application, ncmRepository)
     private val settingsRepository = SettingsRepository(application)
     val playback = PlaybackConnection(application)
 
@@ -42,6 +46,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _searchTracks = MutableStateFlow<List<Track>>(emptyList())
     val searchTracks: StateFlow<List<Track>> = _searchTracks.asStateFlow()
+    private val _dailyTracks = MutableStateFlow<List<Track>>(emptyList())
+    val dailyTracks: StateFlow<List<Track>> = _dailyTracks.asStateFlow()
+    private val _dailyMessage = MutableStateFlow("")
+    val dailyMessage: StateFlow<String> = _dailyMessage.asStateFlow()
     private val _networkMessage = MutableStateFlow("可搜索网易云公开曲目")
     val networkMessage: StateFlow<String> = _networkMessage.asStateFlow()
     private val _lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
@@ -92,8 +100,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playLocal(track: Track) {
         val tracks = _localTracks.value
-        _lyrics.value = emptyList()
         playback.playQueue(tracks, tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0))
+        loadLyrics(track)
+    }
+
+    fun loadDaily(force: Boolean = false) {
+        viewModelScope.launch {
+            _dailyMessage.value = if (force) "正在刷新每日推荐…" else ""
+            runCatching { dailyRepository.get(settings.value, force) }
+                .onSuccess { tracks ->
+                    _dailyTracks.value = tracks
+                    _dailyMessage.value = if (tracks.isEmpty()) "登录后可获取每日推荐" else "每日推荐"
+                }
+                .onFailure { error -> _dailyMessage.value = error.message ?: "每日推荐暂不可用" }
+        }
     }
 
     fun searchNcm(keyword: String) {
@@ -116,16 +136,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { playable ->
                     playback.playQueue(listOf(playable), 0)
                     _networkMessage.value = "正在播放：${playable.title}"
-                    loadNcmLyric(playable)
+                    loadLyrics(playable)
                 }
                 .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "没有可播放地址"}" }
         }
     }
 
-    private fun loadNcmLyric(track: Track) {
+    private fun loadLyrics(track: Track) {
+        _lyrics.value = emptyList()
         viewModelScope.launch {
-            runCatching { ncmRepository.lyric(settings.value, track) }
-                .onSuccess { (lrc, translated) -> _lyrics.value = LrcParser.parse(lrc, translated) }
+            runCatching { lyricsRepository.load(settings.value, track) }
+                .onSuccess { parsed -> _lyrics.value = parsed }
                 .onFailure { _lyrics.value = emptyList() }
         }
     }

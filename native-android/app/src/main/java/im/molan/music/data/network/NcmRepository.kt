@@ -45,6 +45,12 @@ class NcmRepository(
         NcmAccount(profile.optString("nickname"), profile.optLong("userId", profile.optLong("userId")))
     }
 
+    suspend fun dailySongs(settings: AppSettings): List<Track> = withContext(Dispatchers.IO) {
+        val payload = request(settings, "/recommend/songs", emptyMap())
+        val data = payload.optJSONObject("data") ?: payload
+        songs(data.optJSONArray("dailySongs") ?: payload.optJSONArray("dailySongs") ?: JSONArray())
+    }
+
     suspend fun search(settings: AppSettings, keyword: String, limit: Int = 30): List<Track> = withContext(Dispatchers.IO) {
         val payload = request(settings, "/cloudsearch", mapOf("keywords" to keyword, "limit" to limit.toString()))
         val data = payload.optJSONObject("data") ?: payload.optJSONObject("result") ?: payload
@@ -75,7 +81,8 @@ class NcmRepository(
     }
 
     private fun request(settings: AppSettings, path: String, parameters: Map<String, String>, acceptedCodes: Set<Int> = setOf(200)): JSONObject {
-        val base = settings.ncmcBaseUrl.trimEnd('/').toHttpUrl()
+        val configuredBase = if (settings.useBackupNcmc && settings.backupNcmcBaseUrl.isNotBlank()) settings.backupNcmcBaseUrl else settings.ncmcBaseUrl
+        val base = configuredBase.trimEnd('/').toHttpUrl()
         val builder = base.newBuilder().addPathSegments(path.removePrefix("/"))
         parameters.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         if (settings.ncmCookie.isNotBlank()) builder.addQueryParameter("cookie", settings.ncmCookie)
