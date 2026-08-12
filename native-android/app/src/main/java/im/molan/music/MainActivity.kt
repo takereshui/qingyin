@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
@@ -63,6 +64,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
@@ -132,6 +134,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     var ncmLoginVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
     var donateVisible by remember { mutableStateOf(false) }
+    var ncmAccountVisible by remember { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
     val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) model.scanLocalMusic()
@@ -166,7 +169,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                     AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, model)
                     AppTab.LOCAL -> LocalScreen(tracks, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
                     AppTab.DOWNLOADS -> DownloadsScreen()
-                    AppTab.MINE -> MineScreen(settings, myPlaylists, playlistMessage, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                    AppTab.MINE -> MineScreen(settings, myPlaylists, playlistMessage, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                 }
             }
         }
@@ -175,7 +178,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
-        playlistDetail?.let { detail -> PlaylistDetailDialog(detail, model, onDismiss = model::closePlaylist) }
+        if (ncmAccountVisible) NcmAccountDialog(settings, onDismiss = { ncmAccountVisible = false }, onLogout = { model.logoutNcm(); ncmAccountVisible = false })
+        playlistDetail?.let { detail -> PlaylistDetailScreen(detail, model, onBack = model::closePlaylist) }
     }
 }
 
@@ -185,11 +189,7 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.padding(22.dp)) {
-                    Text("轻松聆听", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(6.dp))
                     Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    Text("无广告、无打扰，专注每一首喜欢的歌。")
                 }
             }
         }
@@ -278,44 +278,46 @@ private fun DownloadsScreen() {
 }
 
 @Composable
-private fun MineScreen(settings: AppSettings, playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onNcmLogin: () -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
+private fun MineScreen(settings: AppSettings, playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
-            Card(shape = RoundedCornerShape(18.dp)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AccountCircle, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp)); Column { Text("轻音", fontWeight = FontWeight.Bold); Text("纯净聆听，随心而动", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            } }
-        }
-        item { SettingRow("深色模式", "", Icons.Default.DarkMode, settings.darkTheme) { model.updateSettings { it.copy(darkTheme = !it.darkTheme) } } }
-        item { FilledTonalButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text("播放、下载与线路设置") } }
-        item { Text("播放与下载音质", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(AppSettings.Quality.entries) { quality ->
-            Card(Modifier.fillMaxWidth().clickable { model.updateSettings { it.copy(quality = quality) } }, colors = CardDefaults.cardColors(containerColor = if (settings.quality == quality) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
-                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.MusicNote, null); Spacer(Modifier.width(10.dp)); Text(quality.label, Modifier.weight(1f)); if (settings.quality == quality) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("网易云音乐", fontWeight = FontWeight.SemiBold)
-                    Text(if (settings.ncmCookie.isBlank()) "未登录 · 可使用二维码登录同步账号能力" else "已登录${settings.ncmNickname.takeIf(String::isNotBlank)?.let { " · $it" } ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(10.dp))
-                    if (settings.ncmCookie.isBlank()) FilledTonalButton(onClick = onNcmLogin) { Text("二维码登录") }
-                    else FilledTonalButton(onClick = model::logoutNcm) { Text("退出网易云登录") }
-                }
+            FilledTonalButton(
+                onClick = if (settings.ncmCookie.isBlank()) onNcmLogin else onNcmAccount,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+            ) {
+                Icon(Icons.Default.AccountCircle, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (settings.ncmCookie.isBlank()) "登录网易云音乐" else "网易云 · ${settings.ncmNickname.ifBlank { "已登录" }}")
             }
         }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("我的歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { model.loadMyPlaylists(force = true) }) { Icon(Icons.Default.Refresh, "刷新我的歌单") }
+                Text("我的歌单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = { model.loadMyPlaylists(force = true) }, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.Refresh, "刷新我的歌单") }
+                IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.MoreVert, "设置") }
             }
         }
         if (playlistMessage.isNotBlank()) item { Text(playlistMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (settings.ncmCookie.isNotBlank() && playlists.isEmpty()) item { EmptyHint("登录后会自动同步并显示你的网易云歌单") }
-        if (playlists.isNotEmpty()) items(playlists, key = PlaylistSummary::id) { playlist -> PlaylistRow(playlist, onClick = { model.openPlaylist(playlist) }) }
-        item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth()) { Text("赞赏支持") } }
+        items(playlists.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }) }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth().height(44.dp)) { Text("赞赏支持") } }
+    }
+}
+
+@Composable
+private fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick: () -> Unit) {
+    Card(modifier.clickable(onClick = onClick), shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.padding(10.dp)) {
+            PlaylistCover(playlist, Modifier.fillMaxWidth().height(136.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(playlist.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+            Text("${playlist.trackCount} 首", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -350,27 +352,48 @@ private fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
 }
 
 @Composable
-private fun PlaylistDetailDialog(detail: PlaylistDetail, model: MainViewModel, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                PlaylistCover(detail.summary, Modifier.size(48.dp))
-                Spacer(Modifier.width(10.dp))
+private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, onBack: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "返回") }
+                Text(detail.summary.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                IconButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Icon(Icons.Default.Refresh, "刷新歌单") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 12.dp)) {
+                PlaylistCover(detail.summary, Modifier.size(116.dp))
+                Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(detail.summary.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${detail.tracks.size} 首歌曲", style = MaterialTheme.typography.labelSmall)
+                    Text(detail.summary.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(6.dp))
+                    Text(listOfNotNull(detail.summary.creator.takeIf(String::isNotBlank), "${detail.tracks.size} 首歌曲").joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        },
+            HorizontalDivider()
+            if (detail.tracks.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playNcm(track) }) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NcmAccountDialog(settings: AppSettings, onDismiss: () -> Unit, onLogout: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("网易云音乐") },
         text = {
-            if (detail.tracks.isEmpty()) Text("歌单暂无可播放曲目")
-            else LazyColumn(Modifier.height(360.dp)) {
-                items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playNcm(track) }) }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(settings.ncmNickname.ifBlank { "已登录" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("歌单会自动同步到“我的歌单”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
-        confirmButton = { FilledTonalButton(onClick = onDismiss) { Text("关闭") } },
-        dismissButton = { FilledTonalButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Text("刷新") } },
+        confirmButton = { FilledTonalButton(onClick = onDismiss) { Text("完成") } },
+        dismissButton = { FilledTonalButton(onClick = onLogout) { Text("退出登录") } },
     )
 }
 
@@ -414,12 +437,15 @@ private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave:
     var useChkszBackup by remember(settings) { mutableStateOf(settings.useChkszBackup) }
     var apiKey by remember(settings) { mutableStateOf(settings.chkszApiKey) }
     var quality by remember(settings) { mutableStateOf(settings.quality) }
+    var darkTheme by remember(settings) { mutableStateOf(settings.darkTheme) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("播放、下载与线路设置") },
+        title = { Text("设置") },
         text = {
             LazyColumn(Modifier.height(390.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { Text("统一音质", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+                item { SettingRow("深色模式", "跟随你的界面偏好", Icons.Default.DarkMode, darkTheme) { darkTheme = !darkTheme } }
+                item { Text("播放与下载", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+                item { Text("统一音质", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
                 items(AppSettings.Quality.entries) { option ->
                     Card(
                         Modifier.fillMaxWidth().clickable { quality = option },
@@ -444,6 +470,7 @@ private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave:
         confirmButton = {
             FilledTonalButton(onClick = {
                 onSave(settings.copy(
+                    darkTheme = darkTheme,
                     quality = quality,
                     ncmcBaseUrl = primaryNcm,
                     backupNcmcBaseUrl = backupNcm,
