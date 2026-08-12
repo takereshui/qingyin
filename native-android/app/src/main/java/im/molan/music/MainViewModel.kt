@@ -227,28 +227,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playOnline(track: Track) {
-        viewModelScope.launch {
-            _networkMessage.value = "正在解析播放地址…"
-            when (track.source) {
-                Track.Source.QQ -> runCatching { qqRepository.resolve(settings.value, track) }
-                    .onSuccess { resolved ->
-                        playback.playQueue(listOf(resolved.track), 0)
-                        _lyrics.value = LrcParser.parse(resolved.lyric)
-                        _networkMessage.value = "正在播放：${resolved.track.title} · ${resolved.track.resolvedQqQuality?.label ?: "QQ"}"
-                    }
-                    .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "QQ 没有可播放地址"}" }
-                else -> runCatching { ncmRepository.resolvePlayback(settings.value, track) }
-                    .onSuccess { playable ->
-                        playback.playQueue(listOf(playable), 0)
-                        _networkMessage.value = "正在播放：${playable.title} · ${playable.resolvedQuality?.label ?: "备用线路"}"
-                        loadLyrics(playable)
-                    }
-                    .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "没有可播放地址"}" }
-            }
+        when (track.source) {
+            Track.Source.QQ -> playQq(track)
+            else -> playNetease(track, _networkMessage)
         }
     }
 
-    fun playNcm(track: Track) = playOnline(track)
+    /** 每日推荐使用独立提示，避免解析失败时错误信息只出现在搜索页而让用户误以为点击无响应。 */
+    fun playDaily(track: Track) = playNetease(track, _dailyMessage)
+
+    fun playNcm(track: Track) = playNetease(track, _networkMessage)
+
+    private fun playQq(track: Track) {
+        viewModelScope.launch {
+            _networkMessage.value = "正在解析 QQ 播放地址…"
+            runCatching { qqRepository.resolve(settings.value, track) }
+                .onSuccess { resolved ->
+                    playback.playQueue(listOf(resolved.track), 0)
+                    _lyrics.value = LrcParser.parse(resolved.lyric)
+                    _networkMessage.value = "正在播放：${resolved.track.title} · ${resolved.track.resolvedQqQuality?.label ?: "QQ"}"
+                }
+                .onFailure { error -> _networkMessage.value = "QQ 无法播放：${error.message ?: "没有可播放地址"}" }
+        }
+    }
+
+    private fun playNetease(track: Track, message: MutableStateFlow<String>) {
+        viewModelScope.launch {
+            message.value = "正在解析《${track.title}》的播放地址…"
+            runCatching { ncmRepository.resolvePlayback(settings.value, track) }
+                .onSuccess { playable ->
+                    playback.playQueue(listOf(playable), 0)
+                    message.value = "正在播放：${playable.title} · ${playable.resolvedQuality?.label ?: "备用线路"}"
+                    loadLyrics(playable)
+                }
+                .onFailure { error ->
+                    message.value = "无法播放《${track.title}》：${error.message ?: "没有可播放地址"}"
+                }
+        }
+    }
 
     private fun loadLyrics(track: Track) {
         _lyrics.value = emptyList()

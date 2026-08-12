@@ -55,12 +55,10 @@ class QqRepository(
         val payload = requestChksz(settings, mapOf("mid" to mid, "size" to settings.qqQuality.wireValue, "type" to "json"))
         val url = payload.optString("url").replace("\\/", "/").replaceFirst("http://", "https://")
         require(url.startsWith("https://")) { payload.optString("msg").ifBlank { "QQ 未提供 ${settings.qqQuality.label} 音源" } }
-        val actual = AppSettings.QqQuality.entries.firstOrNull {
-            it.wireValue.equals(payload.optString("bitrate"), ignoreCase = true) || it.wireValue.equals(payload.optString("size"), ignoreCase = true)
-        }
-        val returnedQuality = payload.optString("bitrate").ifBlank { payload.optString("format") }
+        val actual = payload.qQQuality()
+        val returnedQuality = payload.optString("bitrate").ifBlank { payload.optString("size") }.ifBlank { payload.optString("format") }
         require(actual == settings.qqQuality) {
-            "QQ 当前返回“$returnedQuality”而非“${settings.qqQuality.label}”；已取消解析，避免静默降档。"
+            "QQ 当前返回“${returnedQuality.ifBlank { "未知" }}”而非“${settings.qqQuality.label}”；已取消解析，避免静默降档。"
         }
         val format = payload.optString("format").lowercase().takeIf(String::isNotBlank)
             ?: url.substringBefore('?').substringAfterLast('.', "mp3")
@@ -154,17 +152,59 @@ class QqRepository(
 
     private fun requestChksz(settings: AppSettings, parameters: Map<String, String>): JSONObject {
         require(settings.chkszApiKey.isNotBlank()) { "请先在设置中填写 ChKSz API Key 后使用 QQ 音乐" }
-        val base = (if (settings.useChkszBackup) "https://api.chksz.top" else settings.chkszBaseUrl).trimEnd('/').toHttpUrl()
-        val url = base.newBuilder().addPathSegments("api/qq_music").apply {
-            parameters.forEach { (key, value) -> addQueryParameter(key, value) }
-            addQueryParameter("apikey", settings.chkszApiKey)
-        }.build()
-        client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-            require(response.isSuccessful) { "QQ API 请求失败：HTTP ${response.code}" }
-            val payload = JSONObject(response.body?.string().orEmpty())
-            require(payload.optInt("code", 200) == 200) { payload.optString("msg").ifBlank { "QQ API 返回错误" } }
-            return payload
+        val candidates = listOf(settings.chkszBaseUrl, OFFICIAL_API_BASE)
+            .map(::normalizeApiBase)
+            .distinct()
+        var lastFailure = "QQ API 不可用"
+        for (base in candidates) {
+            val url = base.newBuilder().addPathSegments("api/qq_music").apply {
+                parameters.forEach { (key, value) -> addQueryParameter(key, value) }
+                addQueryParameter("apikey", settings.chkszApiKey)
+            }.build()
+            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                val raw = response.body?.string().orEmpty()
+                if (response.code == 404) {
+                    lastFailure = "QQ API 路由不存在：${base.host}"
+                    return@use
+                }
+                if (!response.isSuccessful) {
+                    lastFailure = "QQ API 请求失败：HTTP ${response.code}"
+                    return@use
+                }
+                val payload = runCatching { JSONObject(raw) }.getOrElse {
+                    lastFailure = "QQ API 返回了无法识别的数据"
+                    return@use
+                }
+                if (payload.optInt("code", 200) != 200) {
+                    lastFailure = payload.optString("msg").ifBlank { "QQ API 返回错误" }
+                    return@use
+                }
+                return payload
+            }
         }
+        error(lastFailure)
+    }
+
+    /** 兼容用户把主地址误填成 https://api.chksz.com/api 的旧配置。 */
+    private fun normalizeApiBase(raw: String) = raw.trim().ifBlank { OFFICIAL_API_BASE }
+        .trimEnd('/')
+        .removeSuffix("/api")
+        .toHttpUrl()
+
+    private fun JSONObject.qQQuality(): AppSettings.QqQuality? {
+        val value = optString("bitrate").ifBlank { optString("size") }.trim().lowercase()
+        return when (value) {
+            "128", "128k", "128000" -> AppSettings.QqQuality.K128
+            "320", "320k", "320000" -> AppSettings.QqQuality.K320
+            "flac", "lossless" -> AppSettings.QqQuality.FLAC
+            "hires", "hi-res", "hi_res" -> AppSettings.QqQuality.HIRES
+            "master", "jymaster" -> AppSettings.QqQuality.MASTER
+            else -> null
+        }
+    }
+
+    private companion object {
+        const val OFFICIAL_API_BASE = "https://api.chksz.com"
     }
 
     private fun extractPlaylistId(input: String): String {

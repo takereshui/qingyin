@@ -18,6 +18,8 @@ data class NcmQrCheck(val code: Int, val cookie: String)
 
 data class NcmAccount(val nickname: String, val userId: Long)
 
+private const val OFFICIAL_CHKSZ_BASE = "https://api.chksz.com"
+
 class NcmRepository(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -129,21 +131,27 @@ class NcmRepository(
 
     private fun chkszFallbackUrl(settings: AppSettings, id: String): String? {
         if (settings.chkszApiKey.isBlank()) return null
-        return runCatching {
-            val base = (if (settings.useChkszBackup) "https://api.chksz.top" else settings.chkszBaseUrl).trimEnd('/').toHttpUrl()
+        val bases = listOf(settings.chkszBaseUrl, OFFICIAL_CHKSZ_BASE)
+            .map { it.trim().ifBlank { OFFICIAL_CHKSZ_BASE }.trimEnd('/').removeSuffix("/api").toHttpUrl() }
+            .distinct()
+        for (base in bases) {
             val url = base.newBuilder().addPathSegments("api/163_music")
                 .addQueryParameter("id", id)
                 .addQueryParameter("level", settings.quality.wireValue)
                 .addQueryParameter("type", "json")
                 .addQueryParameter("apikey", settings.chkszApiKey)
                 .build()
-            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val payload = JSONObject(response.body?.string().orEmpty())
-                val data = payload.optJSONObject("data") ?: payload
-                data.optString("url").replace("\\/", "/").replaceFirst("http://", "https://").takeIf { it.startsWith("https://") }
-            }
-        }.getOrNull()
+            val playable = runCatching {
+                client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val payload = JSONObject(response.body?.string().orEmpty())
+                    val data = payload.optJSONObject("data") ?: payload
+                    data.optString("url").replace("\\/", "/").replaceFirst("http://", "https://").takeIf { it.startsWith("https://") }
+                }
+            }.getOrNull()
+            if (playable != null) return playable
+        }
+        return null
     }
 
     private fun request(settings: AppSettings, path: String, parameters: Map<String, String>, acceptedCodes: Set<Int> = setOf(200)): JSONObject {

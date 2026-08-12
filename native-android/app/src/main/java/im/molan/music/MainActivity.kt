@@ -224,7 +224,7 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
             }
         }
         if (dailyMessage.isNotBlank()) item { Text(dailyMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { TrackRow(it, onClick = { model.playNcm(it) }) }
+        if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { TrackRow(it, onClick = { model.playDaily(it) }) }
         item { Text("最近扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         if (tracks.isEmpty()) item { EmptyHint("尚未扫描本地音乐。请到“本地”页面授权并扫描。") }
         else items(tracks.take(8), key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
@@ -553,7 +553,6 @@ private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave:
     var backupNcm by remember(settings) { mutableStateOf(settings.backupNcmcBaseUrl) }
     var useBackupNcm by remember(settings) { mutableStateOf(settings.useBackupNcmc) }
     var chkszBase by remember(settings) { mutableStateOf(settings.chkszBaseUrl) }
-    var useChkszBackup by remember(settings) { mutableStateOf(settings.useChkszBackup) }
     var apiKey by remember(settings) { mutableStateOf(settings.chkszApiKey) }
     var quality by remember(settings) { mutableStateOf(settings.quality) }
     var qqQuality by remember(settings) { mutableStateOf(settings.qqQuality) }
@@ -595,8 +594,8 @@ private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave:
                 item { SettingRow("使用备用 NCMC", "主线路异常时可手动切换", Icons.Default.Refresh, useBackupNcm) { useBackupNcm = !useBackupNcm } }
                 item { Text("QQ / ChKSz API", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
-                item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（可选）") }, singleLine = true) }
-                item { SettingRow("使用 ChKSz 备用域名", "切换至 api.chksz.top", Icons.Default.Refresh, useChkszBackup) { useChkszBackup = !useChkszBackup } }
+                item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（QQ 搜索必填）") }, singleLine = true) }
+                item { Text("QQ 搜索和受限网易云曲目将优先使用官方 ChKSz 主线路；旧备用域名已停用以避免 404。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = {
@@ -609,7 +608,7 @@ private fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave:
                     backupNcmcBaseUrl = backupNcm,
                     useBackupNcmc = useBackupNcm,
                     chkszBaseUrl = chkszBase,
-                    useChkszBackup = useChkszBackup,
+                    useChkszBackup = false,
                     chkszApiKey = apiKey,
                 ))
             }) { Text("保存") }
@@ -678,10 +677,16 @@ private fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue: 
             IconButton(onClick = model.playback::next, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(28.dp)) }
             IconButton(onClick = onQueue, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.QueueMusic, "播放队列", Modifier.size(25.dp)) }
         }
-        LinearProgressIndicator(
-            progress = { (snapshot.positionMs.toFloat() / maxOf(snapshot.durationMs, current.durationMs, 1L).toFloat()).coerceIn(0f, 1f) },
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp).clip(RoundedCornerShape(4.dp)),
-        )
+        val progress = (snapshot.positionMs.toFloat() / maxOf(snapshot.durationMs, current.durationMs, 1L).toFloat()).coerceIn(0f, 1f)
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 7.dp, end = 4.dp).height(4.dp)
+                .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth(progress).fillMaxSize()
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
     }
 }
 
