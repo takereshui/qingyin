@@ -27,6 +27,7 @@ import im.molan.music.playback.PlaybackConnection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.Job
@@ -36,8 +37,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -97,6 +96,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 每次切歌都会更换会话键并取消旧请求，杜绝上一首歌词异步回写到当前界面。 */
     private var lyricsJob: Job? = null
     private var activeLyricKey: String = ""
+    private var queueResolveJob: Job? = null
+    private var resolvingQueueTrackId: String? = null
 
     val settings = settingsRepository.settings.stateIn(
         viewModelScope,
@@ -106,6 +107,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         observeInternalDownloads()
+        observeCurrentQueueTrack()
         loadLocalPlaylists()
     }
 
@@ -376,70 +378,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playNcm(track: Track) = playWithLocalPriority(track, _networkMessage)
 
     /**
-     * 歌单中的任意曲目被点击后，整张歌单会成为当前播放队列，并从所点曲目开始。
-     * 每首远程曲目在加入队列前都沿用本地优先规则；解析失败的曲目会跳过且汇总反馈。
+     * 点击歌单曲目时立即以原始歌单顺序建立队列；不再等待整张歌单逐首解析。
+     * 每个线上曲目只会在播放器真正切换到它时，才请求其所属来源的 API 获取播放地址。
      */
     fun playPlaylist(tracks: List<Track>, selected: Track) {
         if (tracks.isEmpty()) return
+        val startIndex = tracks.indexOfFirst { it.id == selected.id }
+        if (startIndex < 0) return
+        beginLyricSession(selected)
+        playback.playQueue(tracks, startIndex)
+        _playlistMessage.value = "已载入 ${tracks.size} 首 · 正在播放《${selected.title}》"
+    }
+
+    /** 监听播放器当前项；只有真正切到尚无地址的线上曲目时才进行来源 API 解析。 */
+    private fun observeCurrentQueueTrack() {
         viewModelScope.launch {
-            _playlistMessage.value = "正在准备 ${tracks.size} 首歌的播放列表…"
-            val resolved = resolvePlaylistQueue(tracks)
-            val startIndex = resolved.indexOfFirst { it.original.id == selected.id }
-            if (startIndex < 0) {
-                _playlistMessage.value = "无法播放《${selected.title}》；该曲目未获取到可用音源"
-                return@launch
-            }
-            val queue = resolved.map { it.playable }
-            playback.playQueue(queue, startIndex)
-            val selectedResolved = resolved[startIndex]
-            if (selectedResolved.localMatch != null) {
-                loadMatchedLyrics(selectedResolved.playable, selected)
-            } else {
-                loadLyrics(selectedResolved.playable)
-            }
-            val skipped = tracks.size - queue.size
-            _playlistMessage.value = buildString {
-                append("正在播放《${selected.title}》 · 已载入 ${queue.size} 首")
-                if (skipped > 0) append(" · 跳过 $skipped 首不可播放曲目")
+            playback.snapshot.collect { snapshot ->
+                val current = snapshot.current ?: return@collect
+                val needsResolve = (current.source == Track.Source.NETEASE || current.source == Track.Source.QQ) && current.remoteUrl.isNullOrBlank()
+                if (needsResolve) resolveCurrentQueueTrack(current) else ensureLyricsForCurrent(current)
             }
         }
     }
 
-    private data class PlaylistPlayable(
-        val original: Track,
-        val playable: Track,
-        val localMatch: TrackMatcher.Result? = null,
-    )
-
-    private suspend fun resolvePlaylistQueue(tracks: List<Track>): List<PlaylistPlayable> = coroutineScope {
-        // 地址解析受控为 3 路并发，避免大歌单串行等待或对音乐接口产生突发压力。
-        val resolveLimit = Semaphore(3)
-        tracks.map { track ->
-            async {
-                resolveLimit.withPermit {
-                    runCatching {
-                        withTimeout(25_000L) { resolvePlaylistTrack(track) }
-                    }.getOrNull()
+    private fun resolveCurrentQueueTrack(track: Track) {
+        if (resolvingQueueTrackId == track.id && queueResolveJob?.isActive == true) return
+        queueResolveJob?.cancel()
+        resolvingQueueTrackId = track.id
+        queueResolveJob = viewModelScope.launch {
+            _playlistMessage.value = "正在请求《${track.title}》的${if (track.source == Track.Source.QQ) " QQ" else "网易云"}播放地址…"
+            runCatching {
+                withTimeout(25_000L) {
+                    findLocalMatch(track)?.let { return@withTimeout it.local to it }
+                    val resolved = when (track.source) {
+                        Track.Source.NETEASE -> ncmRepository.resolvePlayback(settings.value, track)
+                        Track.Source.QQ -> qqRepository.resolve(settings.value, track).let { response ->
+                            if (response.lyric.isNotBlank()) lyricsRepository.save(response.track, response.lyric)
+                            response.track
+                        }
+                        else -> track
+                    }
+                    resolved to null
+                }
+            }.onSuccess { (playable, localMatch) ->
+                // 用户若已切歌或重建队列，旧解析结果绝不能替换新的当前项。
+                if (playback.snapshot.value.current?.id != track.id) return@onSuccess
+                playback.replaceCurrentAndPlay(playable)
+                if (localMatch != null) loadMatchedLyrics(playable, track) else loadLyrics(playable)
+                _playlistMessage.value = "正在播放《${track.title}》"
+            }.onFailure { error ->
+                if (playback.snapshot.value.current?.id == track.id) {
+                    _playlistMessage.value = "无法播放《${track.title}》：${error.message ?: "播放地址获取失败"}"
                 }
             }
-        }.awaitAll().filterNotNull()
-    }
-
-    private suspend fun resolvePlaylistTrack(track: Track): PlaylistPlayable {
-        when (track.source) {
-            Track.Source.LOCAL, Track.Source.DOWNLOADED -> return PlaylistPlayable(track, track)
-            else -> Unit
+            resolvingQueueTrackId = null
         }
-        findLocalMatch(track)?.let { return PlaylistPlayable(track, it.local, it) }
-        val playable = when (track.source) {
-            Track.Source.NETEASE -> ncmRepository.resolvePlayback(settings.value, track)
-            Track.Source.QQ -> qqRepository.resolve(settings.value, track).let { resolved ->
-                if (resolved.lyric.isNotBlank()) lyricsRepository.save(resolved.track, resolved.lyric)
-                resolved.track
-            }
-            else -> track
-        }
-        return PlaylistPlayable(track, playable)
     }
 
     /**
@@ -677,17 +670,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             _playlistMessage.value = "正在解析 ${targets.size} 首未本地匹配歌曲的下载音源…"
-            val resolveLimit = Semaphore(3)
-            val outcomes = coroutineScope {
-                targets.map { track ->
-                    async {
-                        resolveLimit.withPermit {
+            // 大歌单按 3 首一批解析，控制内存与接口压力；内置下载器仍自行维持 3 路下载。
+            val outcomes = mutableListOf<Result<DownloadRepository.EnqueueResult>>()
+            targets.chunked(3).forEach { batch ->
+                outcomes += coroutineScope {
+                    batch.map { track ->
+                        async {
                             runCatching {
                                 withTimeout(25_000L) { resolveDownloadTrack(track) }
                             }.mapCatching(::enqueueResolvedDownload)
                         }
-                    }
-                }.awaitAll()
+                    }.awaitAll()
+                }
             }
             val added = outcomes.count { it.getOrNull()?.added == true }
             val existing = outcomes.count { it.getOrNull()?.added == false }

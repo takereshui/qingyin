@@ -80,6 +80,26 @@ class PlaybackConnection(context: Context) {
     private fun startPlayback(mediaController: MediaController, tracks: List<Track>, startIndex: Int) {
         _errorMessage.value = ""
         mediaController.setMediaItems(tracks.map(Track::toMediaItem), startIndex, 0L)
+        // 线上歌单的未解析项先完整入队但不预加载；ViewModel 替换当前项地址后才 prepare/play。
+        val selected = tracks[startIndex]
+        val readyNow = selected.uri != null || selected.remoteUrl?.startsWith("https://") == true || selected.remoteUrl?.startsWith("http://") == true
+        if (readyNow) {
+            mediaController.prepare()
+            mediaController.play()
+        } else {
+            mediaController.pause()
+        }
+        publish(mediaController)
+    }
+
+    /** 用解析后的同源地址替换当前队列项，队列顺序和当前索引均保持不变。 */
+    fun replaceCurrentAndPlay(track: Track) {
+        val mediaController = controller ?: return
+        val index = mediaController.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
+        mediaController.replaceMediaItem(index, track.toMediaItem())
+        if (index in cachedQueue.indices) {
+            cachedQueue = cachedQueue.toMutableList().apply { set(index, track) }
+        }
         mediaController.prepare()
         mediaController.play()
         publish(mediaController)

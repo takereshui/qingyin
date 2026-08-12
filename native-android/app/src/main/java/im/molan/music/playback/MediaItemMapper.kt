@@ -1,5 +1,6 @@
 package im.molan.music.playback
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -13,6 +14,8 @@ internal const val EXTRA_NCM_QUALITY = "qingyin_ncm_quality"
 internal const val EXTRA_QQ_QUALITY = "qingyin_qq_quality"
 internal const val EXTRA_AUDIO_EXTENSION = "qingyin_audio_extension"
 internal const val EXTRA_LOCAL_FILE_NAME = "qingyin_local_file_name"
+internal const val EXTRA_DURATION = "qingyin_duration"
+private const val PENDING_QUEUE_SCHEME = "qingyin-queue"
 
 fun Track.toMediaItem(): MediaItem {
     val extras = Bundle().apply {
@@ -23,9 +26,15 @@ fun Track.toMediaItem(): MediaItem {
         putString(EXTRA_QQ_QUALITY, resolvedQqQuality?.wireValue)
         putString(EXTRA_AUDIO_EXTENSION, audioExtension)
         putString(EXTRA_LOCAL_FILE_NAME, localFileName)
+        putLong(EXTRA_DURATION, durationMs)
     }
-    val sourceUri = uri ?: remoteUrl?.let(android.net.Uri::parse)
-        ?: error("曲目没有可播放地址：$id")
+    val sourceUri = uri ?: remoteUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let(Uri::parse)
+        // 线上歌单可先完整入队；真正播放到该曲目时才由 ViewModel 替换为来源 API 返回的地址。
+        ?: if (source == Track.Source.NETEASE || source == Track.Source.QQ) {
+            Uri.Builder().scheme(PENDING_QUEUE_SCHEME).authority("pending").appendPath(id).build()
+        } else {
+            error("曲目没有可播放地址：$id")
+        }
     return MediaItem.Builder()
         .setMediaId(id)
         .setUri(sourceUri)
@@ -51,10 +60,14 @@ fun MediaItem.toTrack(): Track {
         title = metadata.title?.toString().orEmpty().ifBlank { "未知歌曲" },
         artist = metadata.artist?.toString().orEmpty().ifBlank { "未知歌手" },
         album = metadata.extras?.getString(EXTRA_ALBUM).orEmpty(),
+        durationMs = metadata.extras?.getLong(EXTRA_DURATION) ?: 0L,
         uri = localConfiguration?.uri?.takeIf { source == Track.Source.LOCAL || source == Track.Source.DOWNLOADED },
         artworkUri = metadata.artworkUri,
         source = source,
-        remoteUrl = localConfiguration?.uri?.toString()?.takeIf { source == Track.Source.NETEASE || source == Track.Source.QQ },
+        remoteUrl = localConfiguration?.uri?.toString()?.takeIf {
+            (source == Track.Source.NETEASE || source == Track.Source.QQ) &&
+                (it.startsWith("https://") || it.startsWith("http://"))
+        },
         resolvedQuality = AppSettings.Quality.entries.firstOrNull { it.wireValue == metadata.extras?.getString(EXTRA_NCM_QUALITY) },
         resolvedQqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == metadata.extras?.getString(EXTRA_QQ_QUALITY) },
         audioExtension = metadata.extras?.getString(EXTRA_AUDIO_EXTENSION),
