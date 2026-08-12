@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,13 +45,13 @@ import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -65,6 +66,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -89,6 +91,8 @@ import im.molan.music.model.AppSettings
 import im.molan.music.model.PlaybackMode
 import im.molan.music.model.PlayerSnapshot
 import im.molan.music.model.LyricLine
+import im.molan.music.model.PlaylistDetail
+import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.NcmQrLoginState
 import im.molan.music.model.Track
 import im.molan.music.ui.darkWineScheme
@@ -104,21 +108,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppTab(val title: String) { HOME("首页"), LOCAL("本地"), DOWNLOADS("下载"), MINE("我的") }
+private enum class AppTab(val title: String) { HOME("首页"), SEARCH("搜索"), LOCAL("本地"), DOWNLOADS("下载"), MINE("我的") }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun QingyinApp(model: MainViewModel = viewModel()) {
     val settings by model.settings.collectAsStateWithLifecycle()
     val tracks by model.localTracks.collectAsStateWithLifecycle()
     val scanMessage by model.scanMessage.collectAsStateWithLifecycle()
     val player by model.playback.snapshot.collectAsStateWithLifecycle()
+    val playbackError by model.playback.errorMessage.collectAsStateWithLifecycle()
     val searchTracks by model.searchTracks.collectAsStateWithLifecycle()
     val dailyTracks by model.dailyTracks.collectAsStateWithLifecycle()
     val dailyMessage by model.dailyMessage.collectAsStateWithLifecycle()
     val networkMessage by model.networkMessage.collectAsStateWithLifecycle()
     val lyrics by model.lyrics.collectAsStateWithLifecycle()
     val ncmQrLogin by model.ncmQrLogin.collectAsStateWithLifecycle()
+    val myPlaylists by model.myPlaylists.collectAsStateWithLifecycle()
+    val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
+    val playlistMessage by model.playlistMessage.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(AppTab.HOME) }
     var queueVisible by remember { mutableStateOf(false) }
     var playerVisible by remember { mutableStateOf(false) }
@@ -136,47 +143,44 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) { if (model.hasMediaPermission()) model.scanLocalMusic() }
     LaunchedEffect(settings.customFolderUri) { model.restoreCustomFolder(settings.customFolderUri) }
     LaunchedEffect(settings.ncmCookie, settings.useBackupNcmc) { model.loadDaily() }
+    LaunchedEffect(settings.ncmCookie, settings.ncmUserId, settings.useBackupNcmc) { model.loadMyPlaylists() }
 
     MaterialTheme(colorScheme = if (settings.darkTheme) darkWineScheme() else lightWineScheme()) {
         Scaffold(
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = { Text("轻音", fontWeight = FontWeight.Bold) },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary),
-                )
-            },
+            contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             bottomBar = {
                 Column {
                     if (player.current != null) MiniPlayer(player, model, onQueue = { queueVisible = true }, onOpen = { playerVisible = true })
                     NavigationBar {
-                        listOf(AppTab.HOME, AppTab.LOCAL, AppTab.DOWNLOADS, AppTab.MINE).forEach { item ->
-                            val icon = when (item) { AppTab.HOME -> Icons.Default.Home; AppTab.LOCAL -> Icons.Default.LibraryMusic; AppTab.DOWNLOADS -> Icons.Default.Download; AppTab.MINE -> Icons.Default.AccountCircle }
+                        listOf(AppTab.HOME, AppTab.SEARCH, AppTab.LOCAL, AppTab.DOWNLOADS, AppTab.MINE).forEach { item ->
+                            val icon = when (item) { AppTab.HOME -> Icons.Default.Home; AppTab.SEARCH -> Icons.Default.Search; AppTab.LOCAL -> Icons.Default.LibraryMusic; AppTab.DOWNLOADS -> Icons.Default.Download; AppTab.MINE -> Icons.Default.AccountCircle }
                             NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) })
                         }
                     }
                 }
             },
         ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding()) {
                 when (tab) {
-                    AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, searchTracks, networkMessage, model)
+                    AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, model)
+                    AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, model)
                     AppTab.LOCAL -> LocalScreen(tracks, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
                     AppTab.DOWNLOADS -> DownloadsScreen()
-                    AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                    AppTab.MINE -> MineScreen(settings, myPlaylists, playlistMessage, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                 }
             }
         }
         if (queueVisible) QueueDialog(player, model, onDismiss = { queueVisible = false })
-        if (playerVisible) FullPlayerDialog(player, lyrics, model, onDismiss = { playerVisible = false })
+        if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
+        playlistDetail?.let { detail -> PlaylistDetailDialog(detail, model, onDismiss = model::closePlaylist) }
     }
 }
 
 @Composable
-private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessage: String, searchTracks: List<Track>, networkMessage: String, model: MainViewModel) {
-    var query by remember { mutableStateOf("") }
+private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessage: String, model: MainViewModel) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
@@ -204,19 +208,34 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
         }
         if (dailyMessage.isNotBlank()) item { Text(dailyMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (dailyTracks.isNotEmpty()) items(dailyTracks.take(12), key = { "daily:${it.id}" }) { TrackRow(it, onClick = { model.playNcm(it) }) }
-        item { Text("网易云搜索", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
+        item { Text("最近扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
+        if (tracks.isEmpty()) item { EmptyHint("尚未扫描本地音乐。请到“本地”页面授权并扫描。") }
+        else items(tracks.take(8), key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
+    }
+}
+
+@Composable
+private fun SearchScreen(searchTracks: List<Track>, message: String, playbackError: String, model: MainViewModel) {
+    var query by remember { mutableStateOf("") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("线上搜索", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextField(query, onValueChange = { query = it }, modifier = Modifier.weight(1f), singleLine = true, label = { Text("歌曲、歌手或专辑") })
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("歌曲、歌手或专辑") },
+                )
                 Spacer(Modifier.width(8.dp))
                 FilledTonalButton(onClick = { model.searchNcm(query) }) { Text("搜索") }
             }
         }
-        item { Text(networkMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (searchTracks.isNotEmpty()) items(searchTracks, key = Track::id) { TrackRow(it, onClick = { model.playNcm(it) }) }
-        item { Text("最近扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
-        if (tracks.isEmpty()) item { EmptyHint("尚未扫描本地音乐。请到“本地”页面授权并扫描。") }
-        else items(tracks.take(8), key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
+        item { Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (playbackError.isNotBlank()) item { Text(playbackError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        if (searchTracks.isEmpty()) item { EmptyHint("输入关键词后搜索在线音乐") }
+        else items(searchTracks, key = Track::id) { TrackRow(it, onClick = { model.playNcm(it) }) }
     }
 }
 
@@ -259,7 +278,7 @@ private fun DownloadsScreen() {
 }
 
 @Composable
-private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
+private fun MineScreen(settings: AppSettings, playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onNcmLogin: () -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
@@ -287,8 +306,72 @@ private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: 
                 }
             }
         }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("我的歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                IconButton(onClick = { model.loadMyPlaylists(force = true) }) { Icon(Icons.Default.Refresh, "刷新我的歌单") }
+            }
+        }
+        if (playlistMessage.isNotBlank()) item { Text(playlistMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (settings.ncmCookie.isNotBlank() && playlists.isEmpty()) item { EmptyHint("登录后会自动同步并显示你的网易云歌单") }
+        if (playlists.isNotEmpty()) items(playlists, key = PlaylistSummary::id) { playlist -> PlaylistRow(playlist, onClick = { model.openPlaylist(playlist) }) }
         item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth()) { Text("赞赏支持") } }
     }
+}
+
+@Composable
+private fun PlaylistRow(playlist: PlaylistSummary, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        PlaylistCover(playlist, Modifier.size(54.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+            Text(listOfNotNull(playlist.creator.takeIf(String::isNotBlank), playlist.trackCount.takeIf { it > 0 }?.let { "$it 首" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.Default.MoreVert, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
+    val context = LocalContext.current
+    if (playlist.coverUri == null) {
+        Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Default.LibraryMusic, null, tint = MaterialTheme.colorScheme.primary) }
+    } else {
+        AsyncImage(
+            model = ImageRequest.Builder(context).data(playlist.coverUri).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
+            contentDescription = "${playlist.name} 封面",
+            modifier = modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer),
+        )
+    }
+}
+
+@Composable
+private fun PlaylistDetailDialog(detail: PlaylistDetail, model: MainViewModel, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PlaylistCover(detail.summary, Modifier.size(48.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(detail.summary.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${detail.tracks.size} 首歌曲", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        text = {
+            if (detail.tracks.isEmpty()) Text("歌单暂无可播放曲目")
+            else LazyColumn(Modifier.height(360.dp)) {
+                items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playNcm(track) }) }
+            }
+        },
+        confirmButton = { FilledTonalButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = { FilledTonalButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Text("刷新") } },
+    )
 }
 
 @Composable
@@ -500,11 +583,9 @@ private fun NcmQrLoginDialog(state: NcmQrLoginState, onDismiss: () -> Unit, onRe
 }
 
 @Composable
-private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, model: MainViewModel, onDismiss: () -> Unit) {
+private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, playbackError: String, model: MainViewModel, onDismiss: () -> Unit) {
     val current = snapshot.current ?: return
     val duration = snapshot.durationMs.coerceAtLeast(1L)
-    var pendingPosition by remember(current.id) { mutableStateOf(snapshot.positionMs.toFloat()) }
-    LaunchedEffect(snapshot.positionMs) { pendingPosition = snapshot.positionMs.toFloat() }
     val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -518,16 +599,15 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
         },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Slider(
-                    value = pendingPosition.coerceIn(0f, duration.toFloat()),
-                    onValueChange = { pendingPosition = it },
-                    onValueChangeFinished = { model.playback.seekTo(pendingPosition.toLong()) },
-                    valueRange = 0f..duration.toFloat(),
+                LinearProgressIndicator(
+                    progress = { (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(4.dp)),
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatDuration(pendingPosition.toLong()), style = MaterialTheme.typography.labelSmall)
+                    Text(formatDuration(snapshot.positionMs), style = MaterialTheme.typography.labelSmall)
                     Text(formatDuration(snapshot.durationMs), style = MaterialTheme.typography.labelSmall)
                 }
+                if (playbackError.isNotBlank()) Text(playbackError, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
                     IconButton(onClick = model.playback::previous) { Icon(Icons.Default.SkipPrevious, "上一首") }
                     IconButton(onClick = model.playback::toggle, modifier = Modifier.size(58.dp)) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放", Modifier.size(38.dp)) }

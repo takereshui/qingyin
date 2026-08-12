@@ -10,6 +10,7 @@ import im.molan.music.data.local.CustomFolderRepository
 import im.molan.music.data.local.LocalMusicRepository
 import im.molan.music.data.network.DailyRepository
 import im.molan.music.data.network.NcmRepository
+import im.molan.music.data.network.PlaylistRepository
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.data.lyrics.LrcParser
 import im.molan.music.data.lyrics.LyricsRepository
@@ -17,6 +18,8 @@ import im.molan.music.model.AppSettings
 import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
 import im.molan.music.model.NcmQrLoginState
+import im.molan.music.model.PlaylistDetail
+import im.molan.music.model.PlaylistSummary
 import im.molan.music.playback.PlaybackConnection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +37,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val downloadRepository = DownloadRepository(application)
     private val ncmRepository = NcmRepository()
     private val dailyRepository = DailyRepository(application, ncmRepository)
+    private val playlistRepository = PlaylistRepository(application, ncmRepository)
     private val lyricsRepository = LyricsRepository(application, ncmRepository)
     private val settingsRepository = SettingsRepository(application)
     val playback = PlaybackConnection(application)
@@ -54,6 +58,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val networkMessage: StateFlow<String> = _networkMessage.asStateFlow()
     private val _lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
     val lyrics: StateFlow<List<LyricLine>> = _lyrics.asStateFlow()
+    private val _myPlaylists = MutableStateFlow<List<PlaylistSummary>>(emptyList())
+    val myPlaylists: StateFlow<List<PlaylistSummary>> = _myPlaylists.asStateFlow()
+    private val _playlistDetail = MutableStateFlow<PlaylistDetail?>(null)
+    val playlistDetail: StateFlow<PlaylistDetail?> = _playlistDetail.asStateFlow()
+    private val _playlistMessage = MutableStateFlow("")
+    val playlistMessage: StateFlow<String> = _playlistMessage.asStateFlow()
     private val _ncmQrLogin = MutableStateFlow(NcmQrLoginState())
     val ncmQrLogin: StateFlow<NcmQrLoginState> = _ncmQrLogin.asStateFlow()
     private var qrLoginJob: Job? = null
@@ -116,6 +126,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadMyPlaylists(force: Boolean = false, authenticatedSettings: AppSettings? = null) {
+        val current = authenticatedSettings ?: settings.value
+        if (current.ncmCookie.isBlank() || current.ncmUserId <= 0L) {
+            _myPlaylists.value = emptyList()
+            _playlistMessage.value = "登录网易云后可查看我的歌单"
+            return
+        }
+        viewModelScope.launch {
+            _playlistMessage.value = if (force) "正在刷新我的歌单…" else ""
+            runCatching { playlistRepository.playlists(current, current.ncmUserId, force) }
+                .onSuccess { list ->
+                    _myPlaylists.value = list
+                    _playlistMessage.value = if (list.isEmpty()) "没有可显示的歌单" else "共 ${list.size} 个歌单"
+                }
+                .onFailure { error -> _playlistMessage.value = error.message ?: "我的歌单加载失败" }
+        }
+    }
+
+    fun openPlaylist(playlist: PlaylistSummary, force: Boolean = false) {
+        viewModelScope.launch {
+            _playlistMessage.value = "正在加载 ${playlist.name}…"
+            runCatching { playlistRepository.detail(settings.value, playlist.id, force) }
+                .onSuccess { detail -> _playlistDetail.value = detail; _playlistMessage.value = "" }
+                .onFailure { error -> _playlistMessage.value = error.message ?: "歌单详情加载失败" }
+        }
+    }
+
+    fun closePlaylist() { _playlistDetail.value = null }
+
     fun searchNcm(keyword: String) {
         if (keyword.isBlank()) return
         viewModelScope.launch {
@@ -176,7 +215,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         } else {
                                             val authenticated = initialSettings.copy(ncmCookie = cookie)
                                             val account = runCatching { ncmRepository.account(authenticated) }.getOrNull()
-                                            settingsRepository.update { it.copy(ncmCookie = cookie, ncmNickname = account?.nickname.orEmpty()) }
+                                            val userId = account?.userId ?: 0L
+                                            val signedIn = initialSettings.copy(ncmCookie = cookie, ncmNickname = account?.nickname.orEmpty(), ncmUserId = userId)
+                                            settingsRepository.update { it.copy(ncmCookie = signedIn.ncmCookie, ncmNickname = signedIn.ncmNickname, ncmUserId = signedIn.ncmUserId) }
+                                            if (userId > 0L) loadMyPlaylists(force = true, authenticatedSettings = signedIn)
                                             _ncmQrLogin.value = NcmQrLoginState(NcmQrLoginState.Stage.SUCCESS, image, "登录成功${account?.nickname?.let { " · $it" } ?: ""}")
                                         }
                                         qrLoginJob?.cancel()
@@ -199,7 +241,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun logoutNcm() {
         cancelNcmQrLogin()
-        updateSettings { it.copy(ncmCookie = "", ncmNickname = "") }
+        _myPlaylists.value = emptyList()
+        _playlistDetail.value = null
+        updateSettings { it.copy(ncmCookie = "", ncmNickname = "", ncmUserId = 0L) }
     }
 
     fun enqueueDownload(track: Track) {

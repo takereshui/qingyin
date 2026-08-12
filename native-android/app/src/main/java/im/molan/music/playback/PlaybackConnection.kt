@@ -26,11 +26,19 @@ class PlaybackConnection(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _snapshot = MutableStateFlow(PlayerSnapshot())
     val snapshot: StateFlow<PlayerSnapshot> = _snapshot.asStateFlow()
+    private val _errorMessage = MutableStateFlow("")
+    val errorMessage: StateFlow<String> = _errorMessage.asStateFlow()
     private var controller: MediaController? = null
 
     private val listener = object : Player.Listener {
-        override fun onEvents(player: Player, events: Player.Events) = publish(player)
-        override fun onPlayerError(error: androidx.media3.common.PlaybackException) = publish(controller)
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (player.playbackState == Player.STATE_READY) _errorMessage.value = ""
+            publish(player)
+        }
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            _errorMessage.value = "在线音源播放失败：${error.errorCodeName}"
+            publish(controller)
+        }
     }
 
     init {
@@ -54,6 +62,7 @@ class PlaybackConnection(context: Context) {
     fun playQueue(tracks: List<Track>, startIndex: Int) {
         val mediaController = controller ?: return
         if (tracks.isEmpty()) return
+        _errorMessage.value = ""
         mediaController.setMediaItems(tracks.map(Track::toMediaItem), startIndex.coerceIn(0, tracks.lastIndex), 0L)
         mediaController.prepare()
         mediaController.play()

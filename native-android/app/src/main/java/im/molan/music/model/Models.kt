@@ -37,6 +37,19 @@ data class DownloadEntry(
     enum class Status { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, MISSING }
 }
 
+data class PlaylistSummary(
+    val id: String,
+    val name: String,
+    val coverUri: Uri? = null,
+    val trackCount: Int = 0,
+    val creator: String = "",
+)
+
+data class PlaylistDetail(
+    val summary: PlaylistSummary,
+    val tracks: List<Track>,
+)
+
 data class NcmQrLoginState(
     val stage: Stage = Stage.IDLE,
     val qrImage: String = "",
@@ -69,6 +82,7 @@ data class AppSettings(
     val customFolderUri: String = "",
     val ncmCookie: String = "",
     val ncmNickname: String = "",
+    val ncmUserId: Long = 0L,
 ) {
     enum class Quality(val wireValue: String, val label: String) {
         STANDARD("standard", "标准 · 128K"),

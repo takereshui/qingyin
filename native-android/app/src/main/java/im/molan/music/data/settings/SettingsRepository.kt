@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import im.molan.music.model.AppSettings
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +26,7 @@ class SettingsRepository(private val context: Context) {
         val customFolderUri = stringPreferencesKey("custom_folder_uri")
         val ncmCookie = stringPreferencesKey("ncm_cookie")
         val ncmNickname = stringPreferencesKey("ncm_nickname")
+        val ncmUserId = longPreferencesKey("ncm_user_id")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { preferences ->
@@ -41,6 +43,7 @@ class SettingsRepository(private val context: Context) {
             customFolderUri = preferences[Keys.customFolderUri] ?: "",
             ncmCookie = preferences[Keys.ncmCookie] ?: "",
             ncmNickname = preferences[Keys.ncmNickname] ?: "",
+            ncmUserId = preferences[Keys.ncmUserId] ?: 0L,
         )
     }
 
@@ -59,6 +62,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.customFolderUri] = next.customFolderUri
             preferences[Keys.ncmCookie] = next.ncmCookie
             preferences[Keys.ncmNickname] = next.ncmNickname
+            preferences[Keys.ncmUserId] = next.ncmUserId
         }
     }
 }
