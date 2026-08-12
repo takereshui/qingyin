@@ -77,21 +77,24 @@ class NcmRepository(
     }
 
     /**
-     * 播放允许逐级回退，且会把接口返回的实际音质写回曲目，避免界面把 HQ 误认为无损。
+     * 统一解析入口：合并播放与下载路径。
+     * @param isDownload 为 true 时，将严格要求匹配当前设置的音质，不允许降级。
      */
-    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, allowFallback = true)
-
-    /**
-     * 下载绝不静默降档：只有服务端确认的音质与当前设置完全一致时才返回下载地址。
-     */
-    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, allowFallback = false)
-
-    private suspend fun resolveRemote(settings: AppSettings, track: Track, allowFallback: Boolean): Track = withContext(Dispatchers.IO) {
+    suspend fun resolveRemote(settings: AppSettings, track: Track, isDownload: Boolean = false): Track = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
-        // 已由接口确认过的地址直接复用；下载仍严格要求与当前档位一致。
-        val reusable = track.remoteUrl?.takeIf { it.startsWith("https://") } != null &&
-            if (allowFallback) track.resolvedQuality != null else track.resolvedQuality == settings.quality
-        if (reusable) return@withContext track
+
+        // 检查地址有效性：若地址未过期且音质符合要求，直接复用。
+        val now = System.currentTimeMillis()
+        val ageMs = now - track.resolvedAt
+        val isExpired = ageMs > 3L * 60 * 60 * 1000 // 3小时有效期
+        val url = track.remoteUrl
+        val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
+
+        if (hasValidUrl && !isExpired) {
+            // 播放时只要有地址就用；下载时必须音质对得上
+            if (!isDownload || track.resolvedQuality == settings.quality) return@withContext track
+        }
+
         val id = track.id.removePrefix("ncm:")
         val qualityOrder = listOf(
             AppSettings.Quality.JYMASTER,
@@ -101,25 +104,52 @@ class NcmRepository(
             AppSettings.Quality.HIGH,
             AppSettings.Quality.STANDARD,
         )
-        val levels = if (allowFallback) qualityOrder.dropWhile { it != settings.quality } else listOf(settings.quality)
+
+        // 下载仅尝试目标音质；播放允许向下兼容。
+        val levels = if (isDownload) listOf(settings.quality) else qualityOrder.dropWhile { it != settings.quality }
+
+        var lastError = "网易云未返回可用播放地址"
         for (requested in levels) {
-            val payload = request(settings, "/song/url/v1", mapOf("id" to id, "level" to requested.wireValue))
+            val payload = try {
+                request(settings, "/song/url/v1", mapOf("id" to id, "level" to requested.wireValue))
+            } catch (e: Exception) {
+                continue
+            }
             val row = (payload.optJSONArray("data") ?: JSONArray()).optJSONObject(0) ?: continue
-            val url = row.optString("url").replace("\\/", "/").replaceFirst("http://", "https://")
+            val rawUrl = row.optString("url").replace("\\/", "/")
+            if (rawUrl.isBlank()) continue
+
             val actual = AppSettings.Quality.entries.firstOrNull { it.wireValue == row.optString("level") }
             val extension = row.optString("type").lowercase().takeIf(String::isNotBlank)
-            if (url.startsWith("https://") && actual == requested) {
-                return@withContext track.copy(remoteUrl = url, resolvedQuality = actual, audioExtension = extension, resolvedAt = System.currentTimeMillis())
-            }
-        }
-        if (allowFallback) {
-                    chkszFallbackUrl(settings, id)?.let { url ->
-            return@withContext track.copy(remoteUrl = url, resolvedQuality = null, audioExtension = url.substringBefore('?').substringAfterLast('.', "mp3"), resolvedAt = System.currentTimeMillis())
+
+            // 只要拿到了地址（不论 http/https），在 1.0.19 允许明文后都可用。
+            return@withContext track.copy(
+                remoteUrl = rawUrl,
+                resolvedQuality = actual,
+                audioExtension = extension,
+                resolvedAt = System.currentTimeMillis()
+            )
         }
 
+        // 播放失败时尝试 ChKSz 备用线路。
+        if (!isDownload) {
+            chkszFallbackUrl(settings, id)?.let { fallbackUrl ->
+                return@withContext track.copy(
+                    remoteUrl = fallbackUrl,
+                    resolvedQuality = null,
+                    audioExtension = fallbackUrl.substringBefore('?').substringAfterLast('.', "mp3"),
+                    resolvedAt = System.currentTimeMillis()
+                )
+            }
+        } else {
+            lastError = "网易云未提供“${settings.quality.label}”下载地址；可尝试在设置中调低音质或更换线路。"
         }
-        error("当前服务未提供“${settings.quality.label}”音源；为避免下载为较低音质，已取消下载。可更换服务线路或选择可用音质。")
+
+        error(lastError)
     }
+
+    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = false)
+    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = true)
 
     suspend fun lyric(settings: AppSettings, track: Track): Pair<String, String> = withContext(Dispatchers.IO) {
         val id = track.id.removePrefix("ncm:")

@@ -51,34 +51,46 @@ class QqRepository(
         tracks.map { track -> track.copy(artworkUri = covers[track.qqMid]) }
     }
 
-    /** 下载时优先复用已确认档位的地址，避免同一歌曲重复请求 QQ API。 */
-    suspend fun resolveDownload(settings: AppSettings, track: Track): Track {
-        if (track.remoteUrl?.startsWith("https://") == true && track.resolvedQqQuality == settings.qqQuality) return track
-        return resolve(settings, track).track
-    }
-
-    suspend fun resolve(settings: AppSettings, track: Track): ResolvedQqTrack = withContext(Dispatchers.IO) {
+    /**
+     * 统一 QQ 解析入口。
+     * @param isDownload 为 true 时，若已有地址音质不符，则重新请求。
+     */
+    suspend fun resolve(settings: AppSettings, track: Track, isDownload: Boolean = false): ResolvedQqTrack = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.QQ) { "该曲目不是 QQ 音源" }
+
+        // 检查地址复用
+        val now = System.currentTimeMillis()
+        val ageMs = now - track.resolvedAt
+        val isExpired = ageMs > 3L * 60 * 60 * 1000
+        val url = track.remoteUrl
+        val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
+
+        if (hasValidUrl && !isExpired) {
+            // 下载时必须音质一致；播放只要有地址就用。
+            if (!isDownload || track.resolvedQqQuality == settings.qqQuality) {
+                return@withContext ResolvedQqTrack(track, "") // 复用时不需要重新返回歌词
+            }
+        }
+
         val mid = track.qqMid.orEmpty().ifBlank { track.id.removePrefix("qq:") }
         require(mid.isNotBlank()) { "QQ 曲目缺少 MID" }
+
         val payload = requestChksz(settings, mapOf("mid" to mid, "size" to settings.qqQuality.wireValue, "type" to "json"))
-        val url = payload.optString("url").replace("\\/", "/").replaceFirst("http://", "https://")
-        require(url.startsWith("https://")) { payload.optString("msg").ifBlank { "QQ 未提供 ${settings.qqQuality.label} 音源" } }
+        val rawUrl = payload.optString("url").replace("\\/", "/")
+        require(rawUrl.isNotBlank()) { payload.optString("msg").ifBlank { "QQ 未提供 ${settings.qqQuality.label} 音源" } }
+
         val actual = payload.qQQuality()
-        val returnedQuality = payload.optString("bitrate").ifBlank { payload.optString("size") }.ifBlank { payload.optString("format") }
-        require(actual == settings.qqQuality) {
-            "QQ 当前返回“${returnedQuality.ifBlank { "未知" }}”而非“${settings.qqQuality.label}”；已取消解析，避免静默降档。"
-        }
         val format = payload.optString("format").lowercase().takeIf(String::isNotBlank)
-            ?: url.substringBefore('?').substringAfterLast('.', "mp3")
+            ?: rawUrl.substringBefore('?').substringAfterLast('.', "mp3")
         val cover = payload.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse) ?: track.artworkUri
+
         ResolvedQqTrack(
             track = track.copy(
                 title = payload.optString("name").ifBlank { track.title },
                 artist = payload.optString("singer").ifBlank { track.artist },
                 album = payload.optString("album").ifBlank { track.album },
                 artworkUri = cover,
-                remoteUrl = url,
+                remoteUrl = rawUrl,
                 resolvedQqQuality = actual,
                 audioExtension = format,
                 qqMid = mid,
@@ -87,6 +99,8 @@ class QqRepository(
             lyric = payload.optString("lrc"),
         )
     }
+
+    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolve(settings, track, isDownload = true).track
 
     /**
      * 导入公开 QQ 歌单分享链接或纯数字歌单 ID。该读取不使用 QQ 登录和 Cookie。
