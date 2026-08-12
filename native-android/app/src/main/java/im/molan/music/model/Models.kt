@@ -21,6 +21,8 @@ data class Track(
     /** QQ 音乐接口确认的实际音质；其质量集合与网易云完全独立。 */
     val resolvedQqQuality: AppSettings.QqQuality? = null,
     val qqMid: String? = null,
+    /** 扫描或下载时保留的原始文件名，仅用于本地音源匹配，绝不用于展示。 */
+    val localFileName: String? = null,
 ) {
     enum class Source { LOCAL, DOWNLOADED, NETEASE, QQ }
 }

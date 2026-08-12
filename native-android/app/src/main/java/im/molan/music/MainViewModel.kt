@@ -50,6 +50,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val localTracks: StateFlow<List<Track>> = _localTracks.asStateFlow()
     /** 统一歌曲匹配的内存索引：下载音源优先于普通本地扫描结果。 */
     private var localMatchIndex: Map<String, List<Track>> = emptyMap()
+    /** 本地音源索引每次刷新后清空；同一线上歌曲在列表重组期间只评分一次。 */
+    private val localMatchCache = mutableMapOf<String, TrackMatcher.Result>()
+    private val localNoMatchCache = mutableSetOf<String>()
 
     private val _scanMessage = MutableStateFlow("等待扫描本地音乐")
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
@@ -385,16 +388,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         localMatchIndex = localPlaybackCandidates()
             .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
             .groupBy({ it.first }, { it.second })
+        localMatchCache.clear()
+        localNoMatchCache.clear()
     }
 
     private fun findLocalMatch(remote: Track): TrackMatcher.Result? {
-        val candidates = TrackMatcher.indexKeys(remote)
+        val cacheKey = "${remote.source.name}:${remote.id}"
+        localMatchCache[cacheKey]?.let { return it }
+        if (cacheKey in localNoMatchCache) return null
+        val indexed = TrackMatcher.indexKeys(remote)
             .flatMap { key -> localMatchIndex[key].orEmpty() }
             .distinctBy { it.id }
-        return TrackMatcher.findBest(remote, candidates)
+        // 文件标签错误或中英文标点差异过大时，索引键可能没有交集；此时才回退全量评分。
+        val candidates = indexed.ifEmpty(::localPlaybackCandidates)
+        val result = TrackMatcher.findBest(remote, candidates)
+        if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
+        return result
     }
 
-    /** 供列表展示使用：只有通过时长与元数据评分门槛的本地音源才显示勾选。 */
+    /** 供列表展示使用：命中结果有缓存，Compose 重组不会反复执行字符串评分。 */
     fun hasLocalMatch(track: Track): Boolean =
         track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && findLocalMatch(track) != null
 

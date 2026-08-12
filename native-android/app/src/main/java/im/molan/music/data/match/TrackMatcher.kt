@@ -1,18 +1,30 @@
 package im.molan.music.data.match
 
 import im.molan.music.model.Track
+import java.text.Normalizer
 import kotlin.math.abs
 import kotlin.math.max
 
 /**
  * 线上 / 本地统一歌曲匹配器。
  *
- * 设计参考 APlayer 的“规范键 + 时长门槛 + 标题/艺人/专辑加权评分”思路，但采用独立实现。
- * 本地音源必须达到阈值才会替代线上解析，宁可回退线上，也不误播相似歌曲。
+ * 匹配按可信度分层：艺人+标题精确匹配、仅标题精确匹配、文件名匹配、
+ * 去版本标签后的标题匹配，以及标题/艺人组合的模糊匹配。只有通过对应模式的
+ * 保护门槛后，本地音源才会替代线上解析，兼顾本地优先与避免误播。
  */
 object TrackMatcher {
-    const val ACCEPTANCE_SCORE = 55f
-    private const val DURATION_TOLERANCE_MS = 4_000L
+    /** 常规模糊匹配的基础接受分数；更强的标题/文件名模式使用各自门槛。 */
+    const val ACCEPTANCE_SCORE = 45f
+    private const val LOCAL_DURATION_TOLERANCE_MS = 6_000L
+    private const val DOWNLOADED_DURATION_TOLERANCE_MS = 8_000L
+
+    enum class MatchMode {
+        TITLE_ARTIST_EXACT,
+        TITLE_EXACT,
+        TITLE_VARIANT,
+        FILE_NAME,
+        FUZZY,
+    }
 
     data class Result(
         val local: Track,
@@ -20,20 +32,26 @@ object TrackMatcher {
         val titleScore: Float,
         val artistScore: Float?,
         val albumScore: Float?,
+        val mode: MatchMode,
     )
 
-    /** 供搜索、歌词和诊断使用的分层检索键，顺序由强到弱。 */
-    /** 用于内存候选索引：精确标题、去版本标题、艺人标题和标题前缀。 */
+    /**
+     * 用于内存候选索引的检索键。除了元数据标题，也为扫描和下载文件建立
+     * 去扩展名、去标签、分隔符后半段等文件名键，因此“歌手 - 歌名.flac”
+     * 一类文件即使缺少媒体标签也可以进入匹配候选集。
+     */
     fun indexKeys(track: Track): Set<String> {
-        val title = normalize(track.title)
-        if (title.isBlank()) return emptySet()
-        val titleWithoutTags = title.replace(Regex("\\s*[\\[(（].*?[\\])）]"), "").trim().ifBlank { title }
+        val metadataTitles = titleForms(track.title)
+        val fileTitles = track.localFileName?.let(::titleForms).orEmpty()
+        val titles = (metadataTitles + fileTitles).filter { it.length >= 2 }.toSet()
+        if (titles.isEmpty()) return emptySet()
         val artist = normalize(track.artist)
         return buildSet {
-            add("t:$title")
-            add("t:$titleWithoutTags")
-            if (artist.isNotBlank()) add("at:$artist|$title")
-            if (title.length >= 4) add("p:${title.take(4)}")
+            titles.forEach { title ->
+                add("t:$title")
+                if (title.length >= 3) add("p:${title.take(3)}")
+                if (artist.isNotBlank()) add("at:$artist|$title")
+            }
         }
     }
 
@@ -52,27 +70,71 @@ object TrackMatcher {
         .asSequence()
         .filter { it.uri != null && (it.source == Track.Source.LOCAL || it.source == Track.Source.DOWNLOADED) }
         .mapNotNull { candidate -> score(target, candidate) }
-        .filter { it.score >= ACCEPTANCE_SCORE }
-        .maxByOrNull { it.score }
+        .filter(::isAccepted)
+        .maxWithOrNull(
+            compareBy<Result> { it.score }
+                .thenBy { if (it.local.source == Track.Source.DOWNLOADED) 1 else 0 },
+        )
 
     fun score(target: Track, local: Track): Result? {
-        if (!durationCompatible(target.durationMs, local.durationMs)) return null
-        val titleScore = textScore(target.title, local.title)
+        if (!durationCompatible(target, local)) return null
+
+        val targetTitles = titleForms(target.title)
+        if (targetTitles.isEmpty()) return null
+        val metadataScore = bestTextScore(targetTitles, titleForms(local.title))
+        val filenameScore = local.localFileName?.let { bestTextScore(targetTitles, titleForms(it)) } ?: 0f
+        val titleScore = max(metadataScore, filenameScore)
+        if (titleScore < 38f) return null
+
         val artistScore = optionalScore(target.artist, local.artist, ::artistScore)
         val albumScore = optionalScore(target.album, local.album, ::textScore)
-        var finalScore = when {
+        val fromFileName = filenameScore > metadataScore + 2f
+        val titleExact = titleScore >= 99.5f
+        val artistExact = artistScore != null && artistScore >= 99.5f
+        val titleVariant = titleScore >= 88f
+
+        val baseScore = when {
             artistScore != null && albumScore != null -> titleScore * 0.50f + artistScore * 0.35f + albumScore * 0.15f
             artistScore != null -> titleScore * 0.60f + artistScore * 0.40f
             albumScore != null -> titleScore * 0.75f + albumScore * 0.25f
             else -> titleScore
         }
-        // 标题相似度过低时，即便艺人或专辑相同也不允许误匹配。
-        if (titleScore < 30f) finalScore = max(0f, finalScore - 35f)
-        return Result(local, finalScore, titleScore, artistScore, albumScore)
+        val finalScore = when {
+            titleExact && artistExact -> 100f
+            titleExact && artistScore == null -> max(baseScore, 84f)
+            titleExact && (artistScore ?: 0f) >= 55f -> max(baseScore, 92f)
+            titleExact -> max(baseScore, 68f)
+            fromFileName && titleVariant -> max(baseScore, if (artistScore != null && artistScore >= 45f) 88f else 72f)
+            titleVariant && artistScore != null && artistScore >= 45f -> max(baseScore, 78f)
+            else -> baseScore
+        }.coerceIn(0f, 100f)
+
+        val mode = when {
+            titleExact && artistExact -> MatchMode.TITLE_ARTIST_EXACT
+            titleExact -> MatchMode.TITLE_EXACT
+            fromFileName && titleVariant -> MatchMode.FILE_NAME
+            titleVariant -> MatchMode.TITLE_VARIANT
+            else -> MatchMode.FUZZY
+        }
+        return Result(local, finalScore, titleScore, artistScore, albumScore, mode)
     }
 
-    private fun durationCompatible(a: Long, b: Long): Boolean =
-        a <= 0L || b <= 0L || abs(a - b) <= DURATION_TOLERANCE_MS
+    private fun isAccepted(result: Result): Boolean = when (result.mode) {
+        MatchMode.TITLE_ARTIST_EXACT -> true
+        // 单标题精确命中适合媒体标签缺失的本地库；若艺人明确冲突仍要求较高分。
+        MatchMode.TITLE_EXACT -> result.score >= 68f
+        MatchMode.TITLE_VARIANT -> result.score >= 70f && result.titleScore >= 88f
+        MatchMode.FILE_NAME -> result.score >= 62f && result.titleScore >= 88f
+        // 最宽松模式仍必须同时满足“标题足够接近”或“标题+艺人双信号”。
+        MatchMode.FUZZY -> result.score >= ACCEPTANCE_SCORE &&
+            (result.titleScore >= 74f || (result.titleScore >= 50f && (result.artistScore ?: 0f) >= 55f))
+    }
+
+    private fun durationCompatible(target: Track, local: Track): Boolean {
+        if (target.durationMs <= 0L || local.durationMs <= 0L) return true
+        val tolerance = if (local.source == Track.Source.DOWNLOADED) DOWNLOADED_DURATION_TOLERANCE_MS else LOCAL_DURATION_TOLERANCE_MS
+        return abs(target.durationMs - local.durationMs) <= tolerance
+    }
 
     private fun optionalScore(a: String, b: String, scorer: (String, String) -> Float): Float? =
         if (!isValidInfo(a)) null else if (!isValidInfo(b)) 0f else scorer(a, b)
@@ -96,6 +158,9 @@ object TrackMatcher {
         return total / max(left.size, right.size)
     }
 
+    private fun bestTextScore(left: Set<String>, right: Set<String>): Float =
+        left.maxOfOrNull { a -> right.maxOfOrNull { b -> textScore(a, b) } ?: 0f } ?: 0f
+
     private fun textScore(a: String, b: String): Float {
         val left = normalize(a)
         val right = normalize(b)
@@ -112,11 +177,36 @@ object TrackMatcher {
         return max(base, (100f * prefixWeight + suffixScore * (1f - prefixWeight)) * 0.7f + tags)
     }
 
-    private fun normalize(raw: String): String = raw.trim().lowercase()
-        .replace("（", "(").replace("）", ")")
-        .replace("：", ":").replace("！", "!").replace("？", "?")
-        .replace("／", "/").replace("＆", "&").replace("－", "-")
-        .replace(Regex("\\s+"), " ")
+    /** 返回标题的多组等价形式：标准化、去括号版本标签、去合作艺人标签和文件名的后半段。 */
+    private fun titleForms(raw: String): Set<String> {
+        val source = raw.trim().replace(Regex("\\.(?:mp3|flac|m4a|aac|ogg|opus|wav)$", RegexOption.IGNORE_CASE), "")
+        if (source.isBlank()) return emptySet()
+        val canonical = normalize(source)
+        val noBracket = canonical.replace(Regex("[\\[(（【][^\\])）】]{0,64}[\\])）】]"), " ").trim()
+        val noVersion = noBracket.replace(VERSION_OR_FEATURE_TAG, " ").trim()
+        val parts = source.split(Regex("\\s*(?:-|–|—|_|·)\\s*")).map(::normalize).filter { it.length >= 2 }
+        return buildSet {
+            listOf(canonical, noBracket, noVersion).filter { it.length >= 2 }.forEach(::add)
+            // 常见文件名“歌手 - 歌名”以最后一段作为候选标题，完整名仍然保留。
+            parts.lastOrNull()?.takeIf { it.length >= 2 }?.let(::add)
+        }
+    }
+
+    private fun normalize(raw: String): String {
+        val simplified = buildString {
+            Normalizer.normalize(raw, Normalizer.Form.NFKD).forEach { char ->
+                append(TRADITIONAL_TO_SIMPLIFIED[char] ?: char)
+            }
+        }
+        return simplified.trim().lowercase()
+            .replace(Regex("\\p{M}+"), "")
+            .replace("（", "(").replace("）", ")")
+            .replace("：", ":").replace("！", "!").replace("？", "?")
+            .replace("／", "/").replace("＆", "&").replace("－", "-")
+            .replace(Regex("[\\p{Punct}·]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
 
     private fun splitArtists(value: String): List<String> = normalize(value)
         .split(Regex("[,，、/\\\\&;；+]|\\s+(?:feat\\.?|ft\\.?)\\s+"))
@@ -126,12 +216,12 @@ object TrackMatcher {
     private fun tagScore(a: String, b: String): Float {
         val tagsA = titleTags(a)
         val tagsB = titleTags(b)
-        if (tagsA.isEmpty() && tagsB.isEmpty()) return 30f
+        if (tagsA.isEmpty() && tagsB.isEmpty()) return 20f
         if (tagsA.isEmpty() || tagsB.isEmpty()) return 0f
-        return tagsA.count { it in tagsB }.toFloat() / max(tagsA.size, tagsB.size) * 30f
+        return tagsA.count { it in tagsB }.toFloat() / max(tagsA.size, tagsB.size) * 25f
     }
 
-    private fun titleTags(value: String): Set<String> = Regex("(?:ver(?:sion)?\\.?|mix(?:ed)?|edit(?:ed)?|伴奏|纯音乐|inst(?:rumental)?|off\\s*vocal|tv\\s*size|live|remix|demo|cover|版)", RegexOption.IGNORE_CASE)
+    private fun titleTags(value: String): Set<String> = VERSION_OR_FEATURE_TAG
         .findAll(value)
         .map { it.value.lowercase().replace("version", "ver").replace("mixed", "mix").replace("edited", "edit") }
         .toSet()
@@ -145,7 +235,7 @@ object TrackMatcher {
 
     private fun similarity(a: String, b: String): Float {
         val longer = if (a.length >= b.length) a else b
-        val shorter = if (a.length >= b.length) b else a
+        val shorter = if (a.length >= b.length) a else b
         if (longer.isEmpty()) return 1f
         val previous = IntArray(shorter.length + 1) { it }
         val current = IntArray(shorter.length + 1)
@@ -167,4 +257,19 @@ object TrackMatcher {
         if (text.all(Char::isDigit)) return false
         return text.count { !it.isLetterOrDigit() && !it.isWhitespace() } <= text.length / 2
     }
+
+    private val VERSION_OR_FEATURE_TAG = Regex(
+        "(?:ver(?:sion)?\\.?|mix(?:ed)?|edit(?:ed)?|feat\\.?|ft\\.?|伴奏|纯音乐|inst(?:rumental)?|off\\s*vocal|tv\\s*size|live|remix|demo|cover|版)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** 常见简繁标题异体统一；其余字符仍按原字符参与模糊匹配。 */
+    private val TRADITIONAL_TO_SIMPLIFIED = mapOf(
+        '後' to '后', '樂' to '乐', '愛' to '爱', '與' to '与', '為' to '为', '這' to '这', '個' to '个',
+        '們' to '们', '裡' to '里', '裡' to '里', '無' to '无', '風' to '风', '雲' to '云', '開' to '开',
+        '關' to '关', '聽' to '听', '說' to '说', '時' to '时', '間' to '间', '見' to '见', '轉' to '转',
+        '會' to '会', '國' to '国', '龍' to '龙', '門' to '门', '聲' to '声', '夢' to '梦', '淚' to '泪',
+        '遠' to '远', '還' to '还', '給' to '给', '讓' to '让', '從' to '从', '點' to '点', '長' to '长',
+        '頭' to '头', '心' to '心', '萬' to '万', '畫' to '画', '車' to '车', '綠' to '绿', '黃' to '黄',
+    )
 }

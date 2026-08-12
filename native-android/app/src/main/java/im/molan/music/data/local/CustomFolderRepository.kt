@@ -40,9 +40,9 @@ class CustomFolderRepository(private val context: Context) {
             val artist = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).orEmpty().ifBlank { "未知歌手" }
             val album = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).orEmpty()
             val duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            Track("saf:$uri", title, artist, album, duration, uri = uri, source = Track.Source.LOCAL)
+            Track("saf:$uri", title, artist, album, duration, uri = uri, source = Track.Source.LOCAL, localFileName = name.orEmpty())
         } catch (_: Exception) {
-            Track("saf:$uri", name.orEmpty().substringBeforeLast('.'), uri = uri, source = Track.Source.LOCAL)
+            Track("saf:$uri", name.orEmpty().substringBeforeLast('.'), uri = uri, source = Track.Source.LOCAL, localFileName = name.orEmpty())
         } finally {
             runCatching { metadata.release() }
         }

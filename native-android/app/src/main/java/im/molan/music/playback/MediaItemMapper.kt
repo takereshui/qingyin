@@ -12,6 +12,7 @@ internal const val EXTRA_QQ_MID = "qingyin_qq_mid"
 internal const val EXTRA_NCM_QUALITY = "qingyin_ncm_quality"
 internal const val EXTRA_QQ_QUALITY = "qingyin_qq_quality"
 internal const val EXTRA_AUDIO_EXTENSION = "qingyin_audio_extension"
+internal const val EXTRA_LOCAL_FILE_NAME = "qingyin_local_file_name"
 
 fun Track.toMediaItem(): MediaItem {
     val extras = Bundle().apply {
@@ -21,6 +22,7 @@ fun Track.toMediaItem(): MediaItem {
         putString(EXTRA_NCM_QUALITY, resolvedQuality?.wireValue)
         putString(EXTRA_QQ_QUALITY, resolvedQqQuality?.wireValue)
         putString(EXTRA_AUDIO_EXTENSION, audioExtension)
+        putString(EXTRA_LOCAL_FILE_NAME, localFileName)
     }
     val sourceUri = uri ?: remoteUrl?.let(android.net.Uri::parse)
         ?: error("曲目没有可播放地址：$id")
@@ -57,5 +59,6 @@ fun MediaItem.toTrack(): Track {
         resolvedQqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == metadata.extras?.getString(EXTRA_QQ_QUALITY) },
         audioExtension = metadata.extras?.getString(EXTRA_AUDIO_EXTENSION),
         qqMid = metadata.extras?.getString(EXTRA_QQ_MID),
+        localFileName = metadata.extras?.getString(EXTRA_LOCAL_FILE_NAME),
     )
 }

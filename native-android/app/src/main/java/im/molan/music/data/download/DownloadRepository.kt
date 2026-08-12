@@ -108,6 +108,7 @@ class DownloadRepository(private val context: Context) {
                 artist = task.artist.substringBefore(" · ").ifBlank { "未知歌手" },
                 uri = Uri.fromFile(file),
                 source = Track.Source.DOWNLOADED,
+                localFileName = task.fileName,
             )
         }
         .sortedBy { it.title.lowercase() }

@@ -16,9 +16,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +34,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -39,7 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
@@ -50,7 +53,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Shuffle
@@ -101,7 +104,6 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
@@ -116,6 +118,8 @@ import im.molan.music.model.NcmQrLoginState
 import im.molan.music.model.Track
 import im.molan.music.ui.darkWineScheme
 import im.molan.music.ui.lightWineScheme
+import im.molan.music.ui.qingyinShapes
+import im.molan.music.ui.qingyinTypography
 
 class MainActivity : ComponentActivity() {
     private val model: MainViewModel by viewModels()
@@ -189,7 +193,11 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     LaunchedEffect(settings.ncmCookie, settings.useBackupNcmc) { model.loadDaily() }
     LaunchedEffect(settings.ncmCookie, settings.ncmUserId, settings.useBackupNcmc) { model.loadMyPlaylists() }
 
-    MaterialTheme(colorScheme = if (settings.darkTheme) darkWineScheme() else lightWineScheme()) {
+    MaterialTheme(
+        colorScheme = if (settings.darkTheme) darkWineScheme() else lightWineScheme(),
+        typography = qingyinTypography,
+        shapes = qingyinShapes,
+    ) {
         Scaffold(
             contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             bottomBar = {
@@ -243,11 +251,16 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
 
 @Composable
 private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessage: String, model: MainViewModel) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.padding(22.dp)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                shape = RoundedCornerShape(28.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            ) {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("本地优先，在线随听", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f))
                 }
             }
         }
@@ -255,7 +268,7 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 QuickCard("本地音乐", "${tracks.size} 首", Icons.Default.LibraryMusic, Modifier.weight(1f))
-                QuickCard("播放队列", "原生管理", Icons.Default.QueueMusic, Modifier.weight(1f))
+                QuickCard("播放队列", "原生管理", Icons.AutoMirrored.Filled.QueueMusic, Modifier.weight(1f))
             }
         }
         item {
@@ -276,7 +289,7 @@ private fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessa
 private fun SearchScreen(searchTracks: List<Track>, message: String, playbackError: String, model: MainViewModel) {
     var query by remember { mutableStateOf("") }
     var source by remember { mutableStateOf(Track.Source.NETEASE) }
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text("线上搜索", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -313,8 +326,13 @@ private fun SearchScreen(searchTracks: List<Track>, message: String, playbackErr
 
 @Composable
 private fun QuickCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
-    Card(modifier, shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(14.dp)) {
+    Card(
+        modifier,
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+    ) {
+        Column(Modifier.padding(16.dp)) {
             Icon(icon, title, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(12.dp))
             Text(title, fontWeight = FontWeight.SemiBold)
@@ -325,10 +343,10 @@ private fun QuickCard(title: String, subtitle: String, icon: androidx.compose.ui
 
 @Composable
 private fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message: String, model: MainViewModel, onRequestPermission: () -> Unit, onPickFolder: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) { Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column(Modifier.weight(1f)) { Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilledTonalButton(onClick = onPickFolder) { Text("添加文件夹") }
                     FilledTonalButton(onClick = { model.scanLocalMusic() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描") }
@@ -356,7 +374,7 @@ private fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message: 
 
 @Composable
 private fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, message: String, model: MainViewModel) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) {
@@ -407,10 +425,10 @@ private fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit) {
 private fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onCreateLocal: () -> Unit) {
     val online = playlists.filter { it.source != Track.Source.LOCAL }
     val local = playlists.filter { it.source == Track.Source.LOCAL }
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) { Text("歌单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("线上同步与本地自建歌单", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column(Modifier.weight(1f)) { Text("歌单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("线上同步与本地自建歌单", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 FilledTonalButton(onClick = onCreateLocal) { Text("新建本地") }
             }
         }
@@ -436,7 +454,7 @@ private fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage:
 
 @Composable
 private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -561,23 +579,29 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "返回") }
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
                 Text(detail.summary.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (detail.summary.source != Track.Source.LOCAL) {
                     IconButton(onClick = { model.syncPlaylistToLocal(detail.summary) }) { Icon(Icons.Default.Refresh, "同步歌单数据，不下载音频") }
                 }
                 IconButton(onClick = { model.openPlaylist(detail.summary, force = true) }) { Icon(Icons.Default.Refresh, "刷新歌单") }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 12.dp)) {
-                PlaylistCover(detail.summary, Modifier.size(116.dp))
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(detail.summary.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(6.dp))
-                    Text(listOfNotNull(detail.summary.creator.takeIf(String::isNotBlank), "${detail.tracks.size} 首歌曲").joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(14.dp)) {
+                    PlaylistCover(detail.summary, Modifier.size(112.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(detail.summary.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(listOfNotNull(detail.summary.creator.takeIf(String::isNotBlank), "${detail.tracks.size} 首歌曲").joinToString(" · "), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (detail.summary.source != Track.Source.LOCAL) Text("线上歌单 · 可同步为本地副本", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             if (detail.tracks.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
@@ -765,10 +789,14 @@ private fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.u
 @Composable
 private fun TrackRow(track: Track, matchedLocal: Boolean = false, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 12.dp, horizontal = 6.dp),
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CoverArt(track, Modifier.size(58.dp), RoundedCornerShape(12.dp))
+        CoverArt(track, Modifier.size(60.dp), RoundedCornerShape(14.dp))
         Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) {
             Text(track.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
             val sourceLabel = when (track.source) { Track.Source.NETEASE -> "网易云"; Track.Source.QQ -> "QQ"; Track.Source.DOWNLOADED -> "已下载"; Track.Source.LOCAL -> "本地" }
@@ -786,7 +814,11 @@ private fun TrackRow(track: Track, matchedLocal: Boolean = false, onClick: () ->
 @Composable
 private fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue: () -> Unit, onOpen: () -> Unit) {
     val current = snapshot.current ?: return
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHighest).padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onOpen).padding(horizontal = 4.dp, vertical = 2.dp),
@@ -798,7 +830,7 @@ private fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue: 
             }
             IconButton(onClick = model.playback::toggle, modifier = Modifier.size(48.dp)) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放", Modifier.size(28.dp)) }
             IconButton(onClick = model.playback::next, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(28.dp)) }
-            IconButton(onClick = onQueue, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.QueueMusic, "播放队列", Modifier.size(25.dp)) }
+            IconButton(onClick = onQueue, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "播放队列", Modifier.size(25.dp)) }
         }
         val progress = (snapshot.positionMs.toFloat() / maxOf(snapshot.durationMs, current.durationMs, 1L).toFloat()).coerceIn(0f, 1f)
         Box(
@@ -905,7 +937,6 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
     val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
     val pagerState = rememberPagerState(pageCount = { 2 })
     val lyricListState = rememberLazyListState()
-    val density = LocalDensity.current
     var sliderValue by remember(current.id) { mutableStateOf(0f) }
     var isSeeking by remember(current.id) { mutableStateOf(false) }
 
@@ -914,12 +945,17 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
     }
     LaunchedEffect(activeLine, pagerState.currentPage, lyrics.size) {
         if (pagerState.currentPage == 1 && activeLine >= 0) {
-            // 等待歌词页完成布局，再把当前行平滑置于可视区域中心。
-            delay(48)
-            val viewport = lyricListState.layoutInfo.viewportEndOffset - lyricListState.layoutInfo.viewportStartOffset
-            // 将歌词行自身的中心（而非行顶部）对齐到屏幕中心。
-            val lineHalfHeight = with(density) { 34.dp.roundToPx() }
-            lyricListState.animateScrollToItem(activeLine, if (viewport > 0) -viewport / 2 + lineHalfHeight else 0)
+            // 先保证目标行已进入测量范围；随后按实际 item 高度和实际 viewport 中点校正。
+            // 这避免了用固定行高/固定 dp 偏移所造成的歌词总是靠近底部的问题。
+            lyricListState.scrollToItem(activeLine)
+            delay(32)
+            val layout = lyricListState.layoutInfo
+            val target = layout.visibleItemsInfo.firstOrNull { it.index == activeLine }
+            if (target != null) {
+                val viewportCenter = (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
+                val targetCenter = target.offset + target.size / 2f
+                lyricListState.animateScrollBy(targetCenter - viewportCenter)
+            }
         }
     }
 
@@ -928,7 +964,7 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.26f), MaterialTheme.colorScheme.background.copy(alpha = 0.88f)))))
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 18.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "返回") }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
                 Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                     Text(current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(current.artist, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -962,23 +998,37 @@ private fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, 
                         Text("暂无可用歌词", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
-                    LazyColumn(
-                        state = lyricListState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 180.dp, horizontal = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
-                    ) {
-                        items(lyrics, key = LyricLine::timeMs) { line ->
-                            val index = lyrics.indexOf(line)
-                            Column {
-                                Text(
-                                    line.text,
-                                    style = if (index == activeLine) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
-                                    color = if (index == activeLine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.64f),
-                                    fontWeight = if (index == activeLine) FontWeight.ExtraBold else FontWeight.Normal,
-                                )
-                                line.translation?.let { translated ->
-                                    Text(translated, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        // 前后均预留半个歌词视口，确保第一句和最后一句也可真正抵达中线。
+                        val lyricEdgePadding = maxOf(112.dp, maxHeight / 2 - 34.dp)
+                        LazyColumn(
+                            state = lyricListState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                start = 18.dp,
+                                top = lyricEdgePadding,
+                                end = 18.dp,
+                                bottom = lyricEdgePadding,
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(22.dp),
+                        ) {
+                            itemsIndexed(lyrics, key = { _, line -> line.timeMs }) { index, line ->
+                                val isActive = index == activeLine
+                                Column {
+                                    Text(
+                                        line.text,
+                                        style = if (isActive) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                                        color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.56f),
+                                        fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                                    )
+                                    line.translation?.let { translated ->
+                                        Text(
+                                            translated,
+                                            style = if (isActive) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                                            color = if (isActive) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.54f),
+                                            modifier = Modifier.padding(top = 6.dp),
+                                        )
+                                    }
                                 }
                             }
                         }

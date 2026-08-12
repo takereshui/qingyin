@@ -25,6 +25,7 @@ class LocalMusicRepository(private val context: Context) {
             MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.SIZE,
+            MediaStore.Audio.Media.DISPLAY_NAME,
         )
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND " +
             "${MediaStore.Audio.Media.DURATION} > 0 AND ${MediaStore.Audio.Media.SIZE} > 0"
@@ -41,6 +42,7 @@ class LocalMusicRepository(private val context: Context) {
             val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
             val albumIdCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
             val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+            val displayNameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
             buildList {
                 while (cursor.moveToNext()) {
                     val mediaId = cursor.getLong(idCol)
@@ -60,6 +62,7 @@ class LocalMusicRepository(private val context: Context) {
                             uri = uri,
                             artworkUri = artwork,
                             source = Track.Source.LOCAL,
+                            localFileName = cursor.getString(displayNameCol).orEmpty(),
                         ),
                     )
                 }
