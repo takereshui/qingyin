@@ -37,6 +37,7 @@ class DownloadRepository(private val context: Context) {
         val url: String,
         val fileName: String,
         val status: DownloadEntry.Status,
+        val referer: String? = null,
         val bytesDownloaded: Long = 0L,
         val totalBytes: Long = 0L,
         val errorMessage: String? = null,
@@ -69,11 +70,11 @@ class DownloadRepository(private val context: Context) {
             }
     }
 
-    fun enqueue(url: String, title: String, artist: String, fileName: String): Long =
-        enqueueIfAbsent(url, title, artist, fileName).id
+    fun enqueue(url: String, title: String, artist: String, fileName: String, referer: String? = null): Long =
+        enqueueIfAbsent(url, title, artist, fileName, referer).id
 
     /** 相同标题和艺人的下载任务（包括已完成/排队/失败）只保留一条，避免歌单批量下载重复入队。 */
-    fun enqueueIfAbsent(url: String, title: String, artist: String, fileName: String): EnqueueResult {
+    fun enqueueIfAbsent(url: String, title: String, artist: String, fileName: String, referer: String? = null): EnqueueResult {
         require(url.startsWith("https://") || url.startsWith("http://")) { "下载地址无效" }
         val cleanTitle = title.ifBlank { "轻音下载" }
         val identity = downloadIdentity(cleanTitle, artist)
@@ -103,6 +104,7 @@ class DownloadRepository(private val context: Context) {
                     url = url,
                     fileName = "$id-$safeName",
                     status = DownloadEntry.Status.QUEUED,
+                    referer = referer,
                 )
                 _tasks.value = _tasks.value + task
                 persistLocked()
@@ -157,6 +159,11 @@ class DownloadRepository(private val context: Context) {
             val request = Request.Builder()
                 .url(initial.url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .apply {
+                    if (!initial.referer.isNullOrBlank()) {
+                        header("Referer", initial.referer)
+                    }
+                }
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
@@ -220,6 +227,7 @@ class DownloadRepository(private val context: Context) {
                     .put("url", task.url)
                     .put("fileName", task.fileName)
                     .put("status", task.status.name)
+                    .put("referer", task.referer.orEmpty())
                     .put("bytes", task.bytesDownloaded)
                     .put("total", task.totalBytes)
                     .put("error", task.errorMessage.orEmpty()))
@@ -242,6 +250,7 @@ class DownloadRepository(private val context: Context) {
                     url = url,
                     fileName = row.optString("fileName").ifBlank { "轻音下载" },
                     status = runCatching { DownloadEntry.Status.valueOf(row.optString("status")) }.getOrDefault(DownloadEntry.Status.FAILED),
+                    referer = row.optString("referer").takeIf(String::isNotBlank),
                     bytesDownloaded = row.optLong("bytes"),
                     totalBytes = row.optLong("total"),
                     errorMessage = row.optString("error").takeIf(String::isNotBlank),

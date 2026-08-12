@@ -16,7 +16,7 @@
         android:label="轻音"
         android:supportsRtl="true"
         android:theme="@style/Theme.Qingyin"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true">

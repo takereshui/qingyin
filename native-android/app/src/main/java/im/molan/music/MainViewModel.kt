@@ -789,11 +789,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: "mp3"
         val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
         val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+        val referer = when (downloadable.source) {
+            Track.Source.NETEASE -> "https://music.163.com/"
+            Track.Source.QQ -> "https://y.qq.com/"
+            else -> null
+        }
         return downloadRepository.enqueueIfAbsent(
             requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
             downloadable.title,
             "${downloadable.artist} · $qualityLabel",
             fileName,
+            referer,
         )
     }
 
