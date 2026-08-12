@@ -412,6 +412,9 @@ private fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit) {
                     Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
+            if (entry.status == DownloadEntry.Status.FAILED && !entry.errorMessage.isNullOrBlank()) {
+                Text(entry.errorMessage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp))
+            }
             if (entry.status == DownloadEntry.Status.DOWNLOADING || entry.status == DownloadEntry.Status.QUEUED || entry.status == DownloadEntry.Status.PAUSED) {
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(4.dp)))

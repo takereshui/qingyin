@@ -39,8 +39,9 @@ class DownloadRepository(private val context: Context) {
         val status: DownloadEntry.Status,
         val bytesDownloaded: Long = 0L,
         val totalBytes: Long = 0L,
+        val errorMessage: String? = null,
     ) {
-        fun toEntry() = DownloadEntry(id, title, artist, status, bytesDownloaded, totalBytes, fileName)
+        fun toEntry() = DownloadEntry(id, title, artist, status, bytesDownloaded, totalBytes, fileName, errorMessage)
     }
 
     private val client = OkHttpClient.Builder()
@@ -80,7 +81,15 @@ class DownloadRepository(private val context: Context) {
         val result = synchronized(stateLock) {
             val existing = _tasks.value.firstOrNull { downloadIdentity(it.title, it.artist) == identity }
             if (existing != null) {
-                EnqueueResult(existing.id, added = false)
+                if (existing.status == DownloadEntry.Status.FAILED) {
+                    // 如果任务之前失败了，重新入队时将其重置并再次尝试。
+                    val updated = existing.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = 0L, totalBytes = 0L, errorMessage = null)
+                    _tasks.value = _tasks.value.map { if (it.id == existing.id) updated else it }
+                    persistLocked()
+                    EnqueueResult(existing.id, added = true)
+                } else {
+                    EnqueueResult(existing.id, added = false)
+                }
             } else {
                 val id = nextId.incrementAndGet()
                 val safeName = fileName
@@ -175,11 +184,11 @@ class DownloadRepository(private val context: Context) {
                 require(downloaded > 0L) { "下载文件内容为空" }
                 if (finalFile.exists()) finalFile.delete()
                 require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
-                updateTask(id) { it.copy(status = DownloadEntry.Status.COMPLETED, bytesDownloaded = downloaded, totalBytes = if (total > 0L) total else downloaded) }
+                updateTask(id) { it.copy(status = DownloadEntry.Status.COMPLETED, bytesDownloaded = downloaded, totalBytes = if (total > 0L) total else downloaded, errorMessage = null) }
             }
         }.onFailure { error ->
             partFile.delete()
-            updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED) }
+            updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED, errorMessage = error.message ?: "未知下载错误") }
         }
     }
 
@@ -212,7 +221,8 @@ class DownloadRepository(private val context: Context) {
                     .put("fileName", task.fileName)
                     .put("status", task.status.name)
                     .put("bytes", task.bytesDownloaded)
-                    .put("total", task.totalBytes))
+                    .put("total", task.totalBytes)
+                    .put("error", task.errorMessage.orEmpty()))
             }
         }.toString())
         _taskEntries.value = _tasks.value.map(Task::toEntry).sortedByDescending(DownloadEntry::id)
@@ -234,6 +244,7 @@ class DownloadRepository(private val context: Context) {
                     status = runCatching { DownloadEntry.Status.valueOf(row.optString("status")) }.getOrDefault(DownloadEntry.Status.FAILED),
                     bytesDownloaded = row.optLong("bytes"),
                     totalBytes = row.optLong("total"),
+                    errorMessage = row.optString("error").takeIf(String::isNotBlank),
                 ))
             }
         }

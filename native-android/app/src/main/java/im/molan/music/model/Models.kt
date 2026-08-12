@@ -43,6 +43,7 @@ data class DownloadEntry(
     val bytesDownloaded: Long,
     val totalBytes: Long,
     val fileName: String,
+    val errorMessage: String? = null,
 ) {
     enum class Status { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, MISSING }
 }
