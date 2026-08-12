@@ -14,6 +14,12 @@ data class Track(
     val artworkUri: Uri? = null,
     val source: Source = Source.LOCAL,
     val remoteUrl: String? = null,
+    /** 网易云接口确认的实际音质；下载任务只接受与当前设置完全一致的音源。 */
+    val resolvedQuality: AppSettings.Quality? = null,
+    /** 网易云接口返回的实际容器格式，例如 mp3、flac 或 m4a。 */
+    val audioExtension: String? = null,
+    /** QQ 音乐接口确认的实际音质；其质量集合与网易云完全独立。 */
+    val resolvedQqQuality: AppSettings.QqQuality? = null,
     val qqMid: String? = null,
 ) {
     enum class Source { LOCAL, DOWNLOADED, NETEASE, QQ }
@@ -43,6 +49,7 @@ data class PlaylistSummary(
     val coverUri: Uri? = null,
     val trackCount: Int = 0,
     val creator: String = "",
+    val source: Track.Source = Track.Source.NETEASE,
 )
 
 data class PlaylistDetail(
@@ -72,7 +79,10 @@ data class PlayerSnapshot(
 
 data class AppSettings(
     val darkTheme: Boolean = false,
+    /** 网易云质量：保留旧 quality 字段以兼容既有 DataStore 配置。 */
     val quality: Quality = Quality.EXHIGH,
+    /** QQ 音乐质量：使用 ChKSz QQ 接口的原生 size 参数，绝不混用网易云 level。 */
+    val qqQuality: QqQuality = QqQuality.FLAC,
     val ncmcBaseUrl: String = "https://music.mcseekeri.com",
     val backupNcmcBaseUrl: String = "",
     val useBackupNcmc: Boolean = false,
@@ -83,6 +93,8 @@ data class AppSettings(
     val ncmCookie: String = "",
     val ncmNickname: String = "",
     val ncmUserId: Long = 0L,
+    /** 用户主动导入的公开歌单 ID；详情本身保存在歌单磁盘缓存中。 */
+    val importedPlaylistIds: List<String> = emptyList(),
 ) {
     enum class Quality(val wireValue: String, val label: String) {
         STANDARD("standard", "标准 · 128K"),
@@ -91,5 +103,13 @@ data class AppSettings(
         LOSSLESS("lossless", "无损 FLAC"),
         HIRES("hires", "高解析 Hi-Res"),
         JYMASTER("jymaster", "极高 JY Master")
+    }
+
+    enum class QqQuality(val wireValue: String, val label: String) {
+        K128("128k", "QQ 标准 · 128K"),
+        K320("320k", "QQ 高品质 · 320K"),
+        FLAC("flac", "QQ 无损 FLAC"),
+        HIRES("hires", "QQ 高解析 Hi-Res"),
+        MASTER("master", "QQ 臻品母带"),
     }
 }

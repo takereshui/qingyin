@@ -17,6 +17,8 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val darkTheme = booleanPreferencesKey("dark_theme")
         val quality = stringPreferencesKey("quality")
+        val qqQuality = stringPreferencesKey("qq_quality")
+        val importedPlaylists = stringPreferencesKey("imported_playlists")
         val ncmcBaseUrl = stringPreferencesKey("ncmc_base_url")
         val backupNcmcBaseUrl = stringPreferencesKey("backup_ncmc_base_url")
         val useBackupNcmc = booleanPreferencesKey("use_backup_ncmc")
@@ -34,6 +36,8 @@ class SettingsRepository(private val context: Context) {
             darkTheme = preferences[Keys.darkTheme] ?: false,
             quality = AppSettings.Quality.entries.firstOrNull { it.wireValue == preferences[Keys.quality] }
                 ?: AppSettings.Quality.EXHIGH,
+            qqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == preferences[Keys.qqQuality] }
+                ?: AppSettings.QqQuality.FLAC,
             ncmcBaseUrl = preferences[Keys.ncmcBaseUrl] ?: "https://music.mcseekeri.com",
             backupNcmcBaseUrl = preferences[Keys.backupNcmcBaseUrl] ?: "",
             useBackupNcmc = preferences[Keys.useBackupNcmc] ?: false,
@@ -44,6 +48,7 @@ class SettingsRepository(private val context: Context) {
             ncmCookie = preferences[Keys.ncmCookie] ?: "",
             ncmNickname = preferences[Keys.ncmNickname] ?: "",
             ncmUserId = preferences[Keys.ncmUserId] ?: 0L,
+            importedPlaylistIds = preferences[Keys.importedPlaylists].orEmpty().split('|').filter(String::isNotBlank).distinct(),
         )
     }
 
@@ -53,6 +58,7 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { preferences ->
             preferences[Keys.darkTheme] = next.darkTheme
             preferences[Keys.quality] = next.quality.wireValue
+            preferences[Keys.qqQuality] = next.qqQuality.wireValue
             preferences[Keys.ncmcBaseUrl] = next.ncmcBaseUrl.trimEnd('/')
             preferences[Keys.backupNcmcBaseUrl] = next.backupNcmcBaseUrl.trimEnd('/')
             preferences[Keys.useBackupNcmc] = next.useBackupNcmc
@@ -63,6 +69,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.ncmCookie] = next.ncmCookie
             preferences[Keys.ncmNickname] = next.ncmNickname
             preferences[Keys.ncmUserId] = next.ncmUserId
+            preferences[Keys.importedPlaylists] = next.importedPlaylistIds.filter(String::isNotBlank).distinct().joinToString("|")
         }
     }
 }

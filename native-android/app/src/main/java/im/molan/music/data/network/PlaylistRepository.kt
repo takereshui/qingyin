@@ -13,7 +13,11 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
-class PlaylistRepository(private val context: Context, private val ncm: NcmRepository) {
+class PlaylistRepository(
+    private val context: Context,
+    private val ncm: NcmRepository,
+    private val qq: QqRepository = QqRepository(),
+) {
     private val cacheDir = File(context.filesDir, "playlists-v2").apply { mkdirs() }
     private val listTtlMs = 6L * 60 * 60 * 1000
     private val detailTtlMs = 12L * 60 * 60 * 1000
@@ -25,11 +29,27 @@ class PlaylistRepository(private val context: Context, private val ncm: NcmRepos
         result
     }
 
-    suspend fun detail(settings: AppSettings, playlistId: String, force: Boolean = false): PlaylistDetail = withContext(Dispatchers.IO) {
-        if (!force) readDetail(playlistId)?.takeIf { it.first }?.second?.let { return@withContext it }
-        val result = ncm.playlistDetail(settings, playlistId)
-        writeDetail(playlistId, result)
+    suspend fun detail(settings: AppSettings, playlist: PlaylistSummary, force: Boolean = false): PlaylistDetail = withContext(Dispatchers.IO) {
+        if (!force) readDetail(playlist.id)?.takeIf { it.first }?.second?.let { return@withContext it }
+        val result = when (playlist.source) {
+            Track.Source.QQ -> qq.publicPlaylist(playlist.id)
+            else -> ncm.playlistDetail(settings, playlist.id)
+        }
+        writeDetail(playlist.id, result)
         result
+    }
+
+    suspend fun import(settings: AppSettings, source: Track.Source, input: String): PlaylistDetail = withContext(Dispatchers.IO) {
+        val result = when (source) {
+            Track.Source.QQ -> qq.publicPlaylist(input)
+            else -> ncm.playlistDetail(settings, input.extractNcmPlaylistId())
+        }
+        writeDetail(result.summary.id, result)
+        result
+    }
+
+    suspend fun cachedImported(ids: List<String>): List<PlaylistSummary> = withContext(Dispatchers.IO) {
+        ids.distinct().mapNotNull { id -> readDetail(id)?.second?.summary }
     }
 
     private fun readList(userId: Long): Pair<Boolean, List<PlaylistSummary>>? = runCatching {
@@ -62,16 +82,37 @@ class PlaylistRepository(private val context: Context, private val ncm: NcmRepos
 
     private fun encodeSummaries(items: List<PlaylistSummary>) = JSONArray().apply { items.forEach { put(encodeSummary(it)) } }
     private fun decodeSummaries(items: JSONArray) = buildList { for (index in 0 until items.length()) items.optJSONObject(index)?.let { add(decodeSummary(it)) } }
-    private fun encodeSummary(item: PlaylistSummary) = JSONObject().put("id", item.id).put("name", item.name).put("cover", item.coverUri?.toString().orEmpty()).put("count", item.trackCount).put("creator", item.creator)
-    private fun decodeSummary(json: JSONObject) = PlaylistSummary(json.optString("id"), json.optString("name"), json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse), json.optInt("count"), json.optString("creator"))
+    private fun encodeSummary(item: PlaylistSummary) = JSONObject().put("id", item.id).put("name", item.name).put("cover", item.coverUri?.toString().orEmpty()).put("count", item.trackCount).put("creator", item.creator).put("source", item.source.name)
+    private fun decodeSummary(json: JSONObject) = PlaylistSummary(
+        id = json.optString("id"),
+        name = json.optString("name"),
+        coverUri = json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse),
+        trackCount = json.optInt("count"),
+        creator = json.optString("creator"),
+        source = runCatching { Track.Source.valueOf(json.optString("source")) }.getOrDefault(Track.Source.NETEASE),
+    )
 
     private fun encodeTracks(items: List<Track>) = JSONArray().apply { items.forEach { track ->
-        put(JSONObject().put("id", track.id).put("title", track.title).put("artist", track.artist).put("album", track.album).put("duration", track.durationMs).put("cover", track.artworkUri?.toString().orEmpty()).put("source", track.source.name))
+        put(JSONObject().put("id", track.id).put("title", track.title).put("artist", track.artist).put("album", track.album).put("duration", track.durationMs).put("cover", track.artworkUri?.toString().orEmpty()).put("source", track.source.name).put("qqMid", track.qqMid.orEmpty()))
     } }
     private fun decodeTracks(items: JSONArray) = buildList { for (index in 0 until items.length()) {
         val json = items.optJSONObject(index) ?: continue
-        add(Track(json.optString("id"), json.optString("title"), json.optString("artist"), json.optString("album"), json.optLong("duration"), artworkUri = json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse), source = runCatching { Track.Source.valueOf(json.optString("source")) }.getOrDefault(Track.Source.NETEASE)))
+        add(Track(
+            id = json.optString("id"),
+            title = json.optString("title"),
+            artist = json.optString("artist"),
+            album = json.optString("album"),
+            durationMs = json.optLong("duration"),
+            artworkUri = json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse),
+            source = runCatching { Track.Source.valueOf(json.optString("source")) }.getOrDefault(Track.Source.NETEASE),
+            qqMid = json.optString("qqMid").takeIf(String::isNotBlank),
+        ))
     } }
+
+    private fun String.extractNcmPlaylistId(): String {
+        val fromUrl = Regex("(?:playlist\\?id=|playlist/)([0-9]{5,})", RegexOption.IGNORE_CASE).find(this)?.groupValues?.getOrNull(1)
+        return fromUrl ?: Regex("[0-9]{5,}").find(this)?.value.orEmpty().also { require(it.isNotBlank()) { "请输入网易云歌单链接或纯数字歌单 ID" } }
+    }
 
     private fun fileFor(key: String) = File(cacheDir, MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) } + ".json")
 }

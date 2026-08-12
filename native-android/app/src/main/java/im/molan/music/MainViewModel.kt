@@ -11,10 +11,12 @@ import im.molan.music.data.local.LocalMusicRepository
 import im.molan.music.data.network.DailyRepository
 import im.molan.music.data.network.NcmRepository
 import im.molan.music.data.network.PlaylistRepository
+import im.molan.music.data.network.QqRepository
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.data.lyrics.LrcParser
 import im.molan.music.data.lyrics.LyricsRepository
 import im.molan.music.model.AppSettings
+import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
 import im.molan.music.model.NcmQrLoginState
@@ -38,6 +40,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val ncmRepository = NcmRepository()
     private val dailyRepository = DailyRepository(application, ncmRepository)
     private val playlistRepository = PlaylistRepository(application, ncmRepository)
+    private val qqRepository = QqRepository()
     private val lyricsRepository = LyricsRepository(application, ncmRepository)
     private val settingsRepository = SettingsRepository(application)
     val playback = PlaybackConnection(application)
@@ -47,6 +50,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _scanMessage = MutableStateFlow("等待扫描本地音乐")
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
+    private val _downloads = MutableStateFlow<List<DownloadEntry>>(emptyList())
+    val downloads: StateFlow<List<DownloadEntry>> = _downloads.asStateFlow()
+    private val _downloadedTracks = MutableStateFlow<List<Track>>(emptyList())
+    val downloadedTracks: StateFlow<List<Track>> = _downloadedTracks.asStateFlow()
+    private val _downloadMessage = MutableStateFlow("正在读取系统下载…")
+    val downloadMessage: StateFlow<String> = _downloadMessage.asStateFlow()
 
     private val _searchTracks = MutableStateFlow<List<Track>>(emptyList())
     val searchTracks: StateFlow<List<Track>> = _searchTracks.asStateFlow()
@@ -60,6 +69,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lyrics: StateFlow<List<LyricLine>> = _lyrics.asStateFlow()
     private val _myPlaylists = MutableStateFlow<List<PlaylistSummary>>(emptyList())
     val myPlaylists: StateFlow<List<PlaylistSummary>> = _myPlaylists.asStateFlow()
+    private val _importedPlaylists = MutableStateFlow<List<PlaylistSummary>>(emptyList())
+    val importedPlaylists: StateFlow<List<PlaylistSummary>> = _importedPlaylists.asStateFlow()
     private val _playlistDetail = MutableStateFlow<PlaylistDetail?>(null)
     val playlistDetail: StateFlow<PlaylistDetail?> = _playlistDetail.asStateFlow()
     private val _playlistMessage = MutableStateFlow("")
@@ -74,6 +85,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AppSettings(),
     )
 
+    init { refreshDownloads() }
+
     fun scanLocalMusic() {
         viewModelScope.launch {
             _scanMessage.value = "正在扫描系统媒体库…"
@@ -87,6 +100,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun hasMediaPermission(): Boolean = localRepository.canReadMedia()
+
+    fun refreshDownloads() {
+        viewModelScope.launch {
+            _downloadMessage.value = "正在读取系统下载与 Music/轻音…"
+            runCatching {
+                downloadRepository.entries() to downloadRepository.downloadedTracks()
+            }.onSuccess { (entries, tracks) ->
+                _downloads.value = entries
+                _downloadedTracks.value = tracks
+                _downloadMessage.value = if (tracks.isEmpty()) "Music/轻音 暂无已完成的可播放文件" else "已发现 ${tracks.size} 首已下载音乐"
+            }.onFailure { error ->
+                _downloadMessage.value = "读取下载失败：${error.message ?: "请确认已授予音乐读取权限"}"
+            }
+        }
+    }
+
+    fun playDownloaded(track: Track) {
+        val queue = _downloadedTracks.value
+        playback.playQueue(queue, queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0))
+        loadLyrics(track)
+    }
 
     fun scanCustomFolder(uri: Uri) {
         runCatching {
@@ -144,10 +178,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadImportedPlaylists() {
+        viewModelScope.launch {
+            _importedPlaylists.value = playlistRepository.cachedImported(settings.value.importedPlaylistIds)
+        }
+    }
+
+    fun importPlaylist(source: Track.Source, input: String) {
+        viewModelScope.launch {
+            _playlistMessage.value = "正在导入${if (source == Track.Source.QQ) " QQ" else "网易云"}歌单…"
+            runCatching { playlistRepository.import(settings.value, source, input.trim()) }
+                .onSuccess { detail ->
+                    val nextIds = (settings.value.importedPlaylistIds + detail.summary.id).distinct()
+                    settingsRepository.update { it.copy(importedPlaylistIds = nextIds) }
+                    _importedPlaylists.value = (_importedPlaylists.value.filterNot { it.id == detail.summary.id } + detail.summary)
+                    _playlistMessage.value = "已导入：${detail.summary.name}"
+                }
+                .onFailure { error -> _playlistMessage.value = error.message ?: "歌单导入失败" }
+        }
+    }
+
     fun openPlaylist(playlist: PlaylistSummary, force: Boolean = false) {
         viewModelScope.launch {
             _playlistMessage.value = "正在加载 ${playlist.name}…"
-            runCatching { playlistRepository.detail(settings.value, playlist.id, force) }
+            runCatching { playlistRepository.detail(settings.value, playlist, force) }
                 .onSuccess { detail -> _playlistDetail.value = detail; _playlistMessage.value = "" }
                 .onFailure { error -> _playlistMessage.value = error.message ?: "歌单详情加载失败" }
         }
@@ -155,31 +209,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closePlaylist() { _playlistDetail.value = null }
 
-    fun searchNcm(keyword: String) {
+    fun searchOnline(source: Track.Source, keyword: String) {
         if (keyword.isBlank()) return
         viewModelScope.launch {
-            _networkMessage.value = "正在搜索…"
-            runCatching { ncmRepository.search(settings.value, keyword.trim()) }
-                .onSuccess { tracks ->
-                    _searchTracks.value = tracks
-                    _networkMessage.value = if (tracks.isEmpty()) "未找到相关歌曲" else "找到 ${tracks.size} 首歌曲"
-                }
-                .onFailure { error -> _networkMessage.value = "搜索失败：${error.message ?: "NCMC 不可用"}" }
+            _networkMessage.value = "正在搜索${if (source == Track.Source.QQ) " QQ 音乐" else "网易云音乐"}…"
+            val result = when (source) {
+                Track.Source.QQ -> runCatching { qqRepository.search(settings.value, keyword.trim()) }
+                else -> runCatching { ncmRepository.search(settings.value, keyword.trim()) }
+            }
+            result.onSuccess { tracks ->
+                _searchTracks.value = tracks
+                _networkMessage.value = if (tracks.isEmpty()) "未找到相关歌曲" else "找到 ${tracks.size} 首${if (source == Track.Source.QQ) " QQ" else "网易云"}歌曲"
+            }.onFailure { error ->
+                _networkMessage.value = "搜索失败：${error.message ?: if (source == Track.Source.QQ) "QQ API 不可用或未配置 Key" else "NCMC 不可用"}"
+            }
         }
     }
 
-    fun playNcm(track: Track) {
+    fun playOnline(track: Track) {
         viewModelScope.launch {
             _networkMessage.value = "正在解析播放地址…"
-            runCatching { ncmRepository.resolvePlayback(settings.value, track) }
-                .onSuccess { playable ->
-                    playback.playQueue(listOf(playable), 0)
-                    _networkMessage.value = "正在播放：${playable.title}"
-                    loadLyrics(playable)
-                }
-                .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "没有可播放地址"}" }
+            when (track.source) {
+                Track.Source.QQ -> runCatching { qqRepository.resolve(settings.value, track) }
+                    .onSuccess { resolved ->
+                        playback.playQueue(listOf(resolved.track), 0)
+                        _lyrics.value = LrcParser.parse(resolved.lyric)
+                        _networkMessage.value = "正在播放：${resolved.track.title} · ${resolved.track.resolvedQqQuality?.label ?: "QQ"}"
+                    }
+                    .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "QQ 没有可播放地址"}" }
+                else -> runCatching { ncmRepository.resolvePlayback(settings.value, track) }
+                    .onSuccess { playable ->
+                        playback.playQueue(listOf(playable), 0)
+                        _networkMessage.value = "正在播放：${playable.title} · ${playable.resolvedQuality?.label ?: "备用线路"}"
+                        loadLyrics(playable)
+                    }
+                    .onFailure { error -> _networkMessage.value = "无法播放：${error.message ?: "没有可播放地址"}" }
+            }
         }
     }
+
+    fun playNcm(track: Track) = playOnline(track)
 
     private fun loadLyrics(track: Track) {
         _lyrics.value = emptyList()
@@ -247,9 +316,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun enqueueDownload(track: Track) {
-        val url = track.remoteUrl ?: return
-        val fileName = "${track.artist} - ${track.title}.mp3"
-        runCatching { downloadRepository.enqueue(url, track.title, track.artist, fileName) }
+        viewModelScope.launch {
+            _networkMessage.value = "正在按 ${settings.value.quality.label} 解析下载音源…"
+            val resolved = runCatching {
+                when (track.source) {
+                    Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
+                    Track.Source.QQ -> qqRepository.resolve(settings.value, track).track
+                    else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
+                }
+            }
+            resolved.onSuccess { downloadable ->
+                val extension = downloadable.audioExtension
+                    ?.lowercase()
+                    ?.replace(Regex("[^a-z0-9]"), "")
+                    ?.takeIf(String::isNotBlank)
+                    ?: "mp3"
+                val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
+                val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+                runCatching {
+                    downloadRepository.enqueue(downloadable.remoteUrl!!, downloadable.title, "${downloadable.artist} · $qualityLabel", fileName)
+                }.onSuccess {
+                    _networkMessage.value = "已加入下载：${downloadable.title} · $qualityLabel"
+                    refreshDownloads()
+                }.onFailure { error ->
+                    _networkMessage.value = "创建下载失败：${error.message ?: "系统下载服务不可用"}"
+                }
+            }.onFailure { error ->
+                _networkMessage.value = error.message ?: "无法获取所选音质的下载地址"
+            }
+        }
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {

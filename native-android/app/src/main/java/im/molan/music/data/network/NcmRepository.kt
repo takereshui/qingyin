@@ -74,24 +74,44 @@ class NcmRepository(
         songs(data.optJSONArray("songs") ?: payload.optJSONArray("songs") ?: JSONArray())
     }
 
-    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = withContext(Dispatchers.IO) {
+    /**
+     * 播放允许逐级回退，且会把接口返回的实际音质写回曲目，避免界面把 HQ 误认为无损。
+     */
+    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, allowFallback = true)
+
+    /**
+     * 下载绝不静默降档：只有服务端确认的音质与当前设置完全一致时才返回下载地址。
+     */
+    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, allowFallback = false)
+
+    private suspend fun resolveRemote(settings: AppSettings, track: Track, allowFallback: Boolean): Track = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
         val id = track.id.removePrefix("ncm:")
-        val levels = listOf(
-            settings.quality,
+        val qualityOrder = listOf(
+            AppSettings.Quality.JYMASTER,
+            AppSettings.Quality.HIRES,
+            AppSettings.Quality.LOSSLESS,
             AppSettings.Quality.EXHIGH,
             AppSettings.Quality.HIGH,
             AppSettings.Quality.STANDARD,
-        ).distinct()
-        for (quality in levels) {
-            val payload = request(settings, "/song/url/v1", mapOf("id" to id, "level" to quality.wireValue))
-            val rows = payload.optJSONArray("data") ?: JSONArray()
-            val url = rows.optJSONObject(0)?.optString("url").orEmpty().replace("\\/", "/")
-                .replaceFirst("http://", "https://")
-            if (url.isNotBlank() && url.startsWith("https://")) return@withContext track.copy(remoteUrl = url)
+        )
+        val levels = if (allowFallback) qualityOrder.dropWhile { it != settings.quality } else listOf(settings.quality)
+        for (requested in levels) {
+            val payload = request(settings, "/song/url/v1", mapOf("id" to id, "level" to requested.wireValue))
+            val row = (payload.optJSONArray("data") ?: JSONArray()).optJSONObject(0) ?: continue
+            val url = row.optString("url").replace("\\/", "/").replaceFirst("http://", "https://")
+            val actual = AppSettings.Quality.entries.firstOrNull { it.wireValue == row.optString("level") }
+            val extension = row.optString("type").lowercase().takeIf(String::isNotBlank)
+            if (url.startsWith("https://") && actual == requested) {
+                return@withContext track.copy(remoteUrl = url, resolvedQuality = actual, audioExtension = extension)
+            }
         }
-        chkszFallbackUrl(settings, id)?.let { return@withContext track.copy(remoteUrl = it) }
-        error("该歌曲当前没有可用在线音源，请更换歌曲或服务线路")
+        if (allowFallback) {
+            chkszFallbackUrl(settings, id)?.let { url ->
+                return@withContext track.copy(remoteUrl = url, resolvedQuality = null, audioExtension = url.substringBefore('?').substringAfterLast('.', "mp3"))
+            }
+        }
+        error("当前服务未提供“${settings.quality.label}”音源；为避免下载为较低音质，已取消下载。可更换服务线路或选择可用音质。")
     }
 
     suspend fun lyric(settings: AppSettings, track: Track): Pair<String, String> = withContext(Dispatchers.IO) {
