@@ -22,6 +22,7 @@ import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
 import im.molan.music.model.NcmQrLoginState
 import im.molan.music.model.PlaylistDetail
+import im.molan.music.model.PlayerSnapshot
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.playback.PlaybackConnection
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,6 +99,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeLyricKey: String = ""
     private var queueResolveJob: Job? = null
     private var resolvingQueueTrackId: String? = null
+    private var backgroundParseJob: Job? = null
 
     val settings = settingsRepository.settings.stateIn(
         viewModelScope,
@@ -339,12 +341,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closePlaylist() { _playlistDetail.value = null }
 
-    /** 线上歌单曲目加载成功后自动落为本地元数据副本；该操作不请求或下载音频。 */
+    /** 线上歌单曲目加载成功后自动落为本地元数据副本，并开启后台静默全量解析任务。 */
     private suspend fun persistOnlinePlaylistMetadata(detail: PlaylistDetail) {
         if (detail.summary.source == Track.Source.LOCAL) return
         val localDetail = playlistRepository.syncAsLocalPlaylist(detail)
         _localPlaylists.value = _localPlaylists.value
             .filterNot { it.id == localDetail.summary.id } + localDetail.summary
+        // 开启后台全量解析，将 API 链路直接写入本地数据库（JSON 缓存）。
+        startBackgroundPlaylistParsing(localDetail)
+    }
+
+    private fun startBackgroundPlaylistParsing(detail: PlaylistDetail) {
+        backgroundParseJob?.cancel()
+        backgroundParseJob = viewModelScope.launch {
+            val targets = detail.tracks.filter { !playback.isTrackPlayable(it) && (it.source == Track.Source.NETEASE || it.source == Track.Source.QQ) }
+            if (targets.isEmpty()) return@launch
+            val resolvedTracks = detail.tracks.toMutableList()
+            targets.chunked(2).forEach { batch ->
+                coroutineScope {
+                    batch.forEach { track ->
+                        launch {
+                            runCatching { withTimeout(20_000L) { resolveDownloadTrack(track) } }.onSuccess { playable ->
+                                val idx = resolvedTracks.indexOfFirst { it.id == track.id }
+                                if (idx >= 0) {
+                                    resolvedTracks[idx] = playable
+                                    // 实时写回数据库，让“解析”工作在后台无感完成。
+                                    playlistRepository.syncAsLocalPlaylist(detail.copy(tracks = resolvedTracks))
+                                }
+                            }
+                        }
+                    }
+                }
+                delay(1000) // 细水长流，避免对 API 造成突发压力。
+            }
+        }
     }
 
     fun searchOnline(source: Track.Source, keyword: String) {
@@ -390,13 +420,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _playlistMessage.value = "已载入 ${tracks.size} 首 · 正在播放《${selected.title}》"
     }
 
-    /** 监听播放器当前项；只有真正切到尚无地址的线上曲目时才进行来源 API 解析。 */
+    /** 监听播放器当前项；只有真正切到尚无地址或地址已过期的线上曲目时才进行来源 API 解析。 */
     private fun observeCurrentQueueTrack() {
         viewModelScope.launch {
             playback.snapshot.collect { snapshot ->
                 val current = snapshot.current ?: return@collect
-                val needsResolve = (current.source == Track.Source.NETEASE || current.source == Track.Source.QQ) && current.remoteUrl.isNullOrBlank()
+                val needsResolve = !playback.isTrackPlayable(current) && (current.source == Track.Source.NETEASE || current.source == Track.Source.QQ)
                 if (needsResolve) resolveCurrentQueueTrack(current) else ensureLyricsForCurrent(current)
+                // 预解析：如果当前曲目已就绪，静默解析下一首，确保护航秒开。
+                if (!needsResolve) lookAheadResolve(snapshot)
+            }
+        }
+    }
+
+    private fun lookAheadResolve(snapshot: PlayerSnapshot) {
+        val nextIdx = snapshot.currentIndex + 1
+        if (nextIdx !in snapshot.queue.indices) return
+        val nextTrack = snapshot.queue[nextIdx]
+        if (playback.isTrackPlayable(nextTrack) || (nextTrack.source != Track.Source.NETEASE && nextTrack.source != Track.Source.QQ)) return
+        viewModelScope.launch {
+            runCatching { withTimeout(15_000L) { resolveDownloadTrack(nextTrack) } }.onSuccess { playable ->
+                playback.updateQueueItem(nextIdx, playable)
+                // 同时静默写回本地缓存，让持久化链路随听随刷。
+                val detail = _playlistDetail.value
+                if (detail != null && detail.tracks.any { it.id == nextTrack.id }) {
+                    val nextTracks = detail.tracks.toMutableList()
+                    val idx = nextTracks.indexOfFirst { it.id == nextTrack.id }
+                    if (idx >= 0) {
+                        nextTracks[idx] = playable
+                        playlistRepository.syncAsLocalPlaylist(detail.copy(tracks = nextTracks))
+                    }
+                }
             }
         }
     }

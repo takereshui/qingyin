@@ -15,6 +15,7 @@ internal const val EXTRA_QQ_QUALITY = "qingyin_qq_quality"
 internal const val EXTRA_AUDIO_EXTENSION = "qingyin_audio_extension"
 internal const val EXTRA_LOCAL_FILE_NAME = "qingyin_local_file_name"
 internal const val EXTRA_DURATION = "qingyin_duration"
+internal const val EXTRA_RESOLVED_AT = "qingyin_resolved_at"
 private const val PENDING_QUEUE_SCHEME = "qingyin-queue"
 
 fun Track.toMediaItem(): MediaItem {
@@ -27,6 +28,7 @@ fun Track.toMediaItem(): MediaItem {
         putString(EXTRA_AUDIO_EXTENSION, audioExtension)
         putString(EXTRA_LOCAL_FILE_NAME, localFileName)
         putLong(EXTRA_DURATION, durationMs)
+        putLong(EXTRA_RESOLVED_AT, resolvedAt)
     }
     val sourceUri = uri ?: remoteUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let(Uri::parse)
         // 线上歌单可先完整入队；真正播放到该曲目时才由 ViewModel 替换为来源 API 返回的地址。
@@ -73,5 +75,6 @@ fun MediaItem.toTrack(): Track {
         audioExtension = metadata.extras?.getString(EXTRA_AUDIO_EXTENSION),
         qqMid = metadata.extras?.getString(EXTRA_QQ_MID),
         localFileName = metadata.extras?.getString(EXTRA_LOCAL_FILE_NAME),
+        resolvedAt = metadata.extras?.getLong(EXTRA_RESOLVED_AT) ?: 0L,
     )
 }

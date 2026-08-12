@@ -82,6 +82,7 @@ class QqRepository(
                 resolvedQqQuality = actual,
                 audioExtension = format,
                 qqMid = mid,
+                resolvedAt = System.currentTimeMillis(),
             ),
             lyric = payload.optString("lrc"),
         )

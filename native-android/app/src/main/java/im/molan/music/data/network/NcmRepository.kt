@@ -109,13 +109,14 @@ class NcmRepository(
             val actual = AppSettings.Quality.entries.firstOrNull { it.wireValue == row.optString("level") }
             val extension = row.optString("type").lowercase().takeIf(String::isNotBlank)
             if (url.startsWith("https://") && actual == requested) {
-                return@withContext track.copy(remoteUrl = url, resolvedQuality = actual, audioExtension = extension)
+                return@withContext track.copy(remoteUrl = url, resolvedQuality = actual, audioExtension = extension, resolvedAt = System.currentTimeMillis())
             }
         }
         if (allowFallback) {
-            chkszFallbackUrl(settings, id)?.let { url ->
-                return@withContext track.copy(remoteUrl = url, resolvedQuality = null, audioExtension = url.substringBefore('?').substringAfterLast('.', "mp3"))
-            }
+                    chkszFallbackUrl(settings, id)?.let { url ->
+            return@withContext track.copy(remoteUrl = url, resolvedQuality = null, audioExtension = url.substringBefore('?').substringAfterLast('.', "mp3"), resolvedAt = System.currentTimeMillis())
+        }
+
         }
         error("当前服务未提供“${settings.quality.label}”音源；为避免下载为较低音质，已取消下载。可更换服务线路或选择可用音质。")
     }

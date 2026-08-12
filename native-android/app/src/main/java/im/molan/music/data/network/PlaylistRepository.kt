@@ -167,7 +167,22 @@ class PlaylistRepository(
     )
 
     private fun encodeTracks(items: List<Track>) = JSONArray().apply { items.forEach { track ->
-        put(JSONObject().put("id", track.id).put("title", track.title).put("artist", track.artist).put("album", track.album).put("duration", track.durationMs).put("cover", track.artworkUri?.toString().orEmpty()).put("source", track.source.name).put("qqMid", track.qqMid.orEmpty()))
+        put(JSONObject()
+            .put("id", track.id)
+            .put("title", track.title)
+            .put("artist", track.artist)
+            .put("album", track.album)
+            .put("duration", track.durationMs)
+            .put("cover", track.artworkUri?.toString().orEmpty())
+            .put("source", track.source.name)
+            .put("remoteUrl", track.remoteUrl.orEmpty())
+            .put("ncmQuality", track.resolvedQuality?.wireValue.orEmpty())
+            .put("qqQuality", track.resolvedQqQuality?.wireValue.orEmpty())
+            .put("extension", track.audioExtension.orEmpty())
+            .put("qqMid", track.qqMid.orEmpty())
+            .put("localFileName", track.localFileName.orEmpty())
+            .put("resolvedAt", track.resolvedAt)
+        )
     } }
     private fun decodeTracks(items: JSONArray) = buildList { for (index in 0 until items.length()) {
         val json = items.optJSONObject(index) ?: continue
@@ -179,7 +194,13 @@ class PlaylistRepository(
             durationMs = json.optLong("duration"),
             artworkUri = json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse),
             source = runCatching { Track.Source.valueOf(json.optString("source")) }.getOrDefault(Track.Source.NETEASE),
+            remoteUrl = json.optString("remoteUrl").takeIf(String::isNotBlank),
+            resolvedQuality = AppSettings.Quality.entries.firstOrNull { it.wireValue == json.optString("ncmQuality") },
+            resolvedQqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == json.optString("qqQuality") },
+            audioExtension = json.optString("extension").takeIf(String::isNotBlank),
             qqMid = json.optString("qqMid").takeIf(String::isNotBlank),
+            localFileName = json.optString("localFileName").takeIf(String::isNotBlank),
+            resolvedAt = json.optLong("resolvedAt", 0L),
         ))
     } }
 

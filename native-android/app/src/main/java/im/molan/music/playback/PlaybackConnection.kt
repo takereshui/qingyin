@@ -82,7 +82,7 @@ class PlaybackConnection(context: Context) {
         mediaController.setMediaItems(tracks.map(Track::toMediaItem), startIndex, 0L)
         // 线上歌单的未解析项先完整入队但不预加载；ViewModel 替换当前项地址后才 prepare/play。
         val selected = tracks[startIndex]
-        val readyNow = selected.uri != null || selected.remoteUrl?.startsWith("https://") == true || selected.remoteUrl?.startsWith("http://") == true
+        val readyNow = isTrackPlayable(selected)
         if (readyNow) {
             mediaController.prepare()
             mediaController.play()
@@ -90,6 +90,16 @@ class PlaybackConnection(context: Context) {
             mediaController.pause()
         }
         publish(mediaController)
+    }
+
+    /** 检查曲目是否具备立即播放的条件：本地音源或未过期的线上链路。 */
+    fun isTrackPlayable(track: Track): Boolean {
+        if (track.uri != null) return true
+        val url = track.remoteUrl ?: return false
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return false
+        // 线上 API 链路通常有几小时有效期；若超过 3 小时则视为过期，需由 ViewModel 触发重新解析。
+        val ageMs = System.currentTimeMillis() - track.resolvedAt
+        return ageMs in 0..(3L * 60 * 60 * 1000)
     }
 
     /** 用解析后的同源地址替换当前队列项，队列顺序和当前索引均保持不变。 */
@@ -103,6 +113,18 @@ class PlaybackConnection(context: Context) {
         mediaController.prepare()
         mediaController.play()
         publish(mediaController)
+    }
+
+    /** 静默更新队列中指定位置的媒体项地址，不中断当前播放。用于后台预解析。 */
+    fun updateQueueItem(index: Int, track: Track) {
+        val mediaController = controller ?: return
+        if (index !in 0 until mediaController.mediaItemCount) return
+        val existing = mediaController.getMediaItemAt(index)
+        if (existing.mediaId != track.id) return
+        mediaController.replaceMediaItem(index, track.toMediaItem())
+        if (index in cachedQueue.indices) {
+            cachedQueue = cachedQueue.toMutableList().apply { set(index, track) }
+        }
     }
 
     fun toggle() {

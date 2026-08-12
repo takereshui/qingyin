@@ -23,6 +23,8 @@ data class Track(
     val qqMid: String? = null,
     /** 扫描或下载时保留的原始文件名，仅用于本地音源匹配，绝不用于展示。 */
     val localFileName: String? = null,
+    /** 线上链路解析成功的时间戳；用于判断持久化地址是否过期。 */
+    val resolvedAt: Long = 0L,
 ) {
     enum class Source { LOCAL, DOWNLOADED, NETEASE, QQ }
 }
