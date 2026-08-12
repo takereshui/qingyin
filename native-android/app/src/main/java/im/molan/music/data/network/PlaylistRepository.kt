@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 
 class PlaylistRepository(
     private val context: Context,
@@ -21,6 +22,29 @@ class PlaylistRepository(
     private val cacheDir = File(context.filesDir, "playlists-v2").apply { mkdirs() }
     private val listTtlMs = 6L * 60 * 60 * 1000
     private val detailTtlMs = 12L * 60 * 60 * 1000
+    private val localListKey = "local-playlists"
+
+    suspend fun localPlaylists(): List<PlaylistSummary> = withContext(Dispatchers.IO) { readLocalSummaries() }
+
+    suspend fun createLocalPlaylist(name: String): PlaylistSummary = withContext(Dispatchers.IO) {
+        val cleanName = name.trim().ifBlank { "我的新歌单" }
+        val summary = PlaylistSummary(
+            id = "local:${UUID.randomUUID()}",
+            name = cleanName,
+            trackCount = 0,
+            creator = "本地创建",
+            source = Track.Source.LOCAL,
+        )
+        writeLocalSummaries(readLocalSummaries() + summary)
+        writeDetail(summary.id, PlaylistDetail(summary, emptyList()))
+        summary
+    }
+
+    suspend fun deleteLocalPlaylist(id: String) = withContext(Dispatchers.IO) {
+        if (!id.startsWith("local:")) return@withContext
+        writeLocalSummaries(readLocalSummaries().filterNot { it.id == id })
+        fileFor("detail:$id").delete()
+    }
 
     /** 供界面优先展示本地持久化的歌单目录；即使缓存已过期也可离线使用。 */
     suspend fun cachedPlaylists(userId: Long): List<PlaylistSummary> = withContext(Dispatchers.IO) {
@@ -47,6 +71,7 @@ class PlaylistRepository(
         if (!force && cached != null) return@withContext cached
         runCatching {
             when (playlist.source) {
+                Track.Source.LOCAL -> cached ?: PlaylistDetail(playlist, emptyList())
                 Track.Source.QQ -> qq.publicPlaylist(playlist.id)
                 else -> ncm.playlistDetail(settings, playlist.id)
             }
@@ -65,6 +90,15 @@ class PlaylistRepository(
 
     suspend fun cachedImported(ids: List<String>): List<PlaylistSummary> = withContext(Dispatchers.IO) {
         ids.distinct().mapNotNull { id -> readDetail(id)?.second?.summary }
+    }
+
+    private fun readLocalSummaries(): List<PlaylistSummary> = runCatching {
+        val json = JSONObject(fileFor(localListKey).readText())
+        decodeSummaries(json.optJSONArray("items") ?: JSONArray())
+    }.getOrDefault(emptyList())
+
+    private fun writeLocalSummaries(items: List<PlaylistSummary>) {
+        fileFor(localListKey).writeText(JSONObject().put("items", encodeSummaries(items)).toString())
     }
 
     private fun readList(userId: Long): Pair<Boolean, List<PlaylistSummary>>? = runCatching {

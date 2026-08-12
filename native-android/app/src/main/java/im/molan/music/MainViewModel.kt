@@ -73,6 +73,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val myPlaylists: StateFlow<List<PlaylistSummary>> = _myPlaylists.asStateFlow()
     private val _importedPlaylists = MutableStateFlow<List<PlaylistSummary>>(emptyList())
     val importedPlaylists: StateFlow<List<PlaylistSummary>> = _importedPlaylists.asStateFlow()
+    private val _localPlaylists = MutableStateFlow<List<PlaylistSummary>>(emptyList())
+    val localPlaylists: StateFlow<List<PlaylistSummary>> = _localPlaylists.asStateFlow()
     private val _playlistDetail = MutableStateFlow<PlaylistDetail?>(null)
     val playlistDetail: StateFlow<PlaylistDetail?> = _playlistDetail.asStateFlow()
     private val _playlistMessage = MutableStateFlow("")
@@ -87,17 +89,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AppSettings(),
     )
 
-    init { refreshDownloads() }
+    init {
+        refreshDownloads()
+        loadLocalPlaylists()
+    }
 
     fun scanLocalMusic() {
         viewModelScope.launch {
-            _scanMessage.value = "正在扫描系统媒体库…"
-            runCatching { localRepository.scanMediaStore() }
+            _scanMessage.value = "正在扫描本地音乐目录…"
+            val roots = settings.value.customFolderUris
+            runCatching {
+                val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore() else emptyList()
+                val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri)) }
+                (mediaTracks + customTracks).distinctBy { it.id }
+            }
                 .onSuccess { tracks ->
                     _localTracks.value = tracks
-                    _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已发现 ${tracks.size} 首本地音乐"
+                    _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
                 }
-                .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "系统媒体库不可用"}" }
+                .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
         }
     }
 
@@ -124,24 +134,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadLyrics(track)
     }
 
-    fun scanCustomFolder(uri: Uri) {
+    fun scanCustomFolder(uri: Uri) = addCustomFolder(uri)
+
+    fun addCustomFolder(uri: Uri) {
         runCatching {
             getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         viewModelScope.launch {
-            _scanMessage.value = "正在扫描自定义音乐目录…"
-            runCatching { customFolderRepository.scan(uri) }
-                .onSuccess { customTracks ->
-                    _localTracks.value = (_localTracks.value + customTracks).distinctBy { it.id }
-                    _scanMessage.value = "已加载 ${customTracks.size} 首自定义目录音乐"
-                    settingsRepository.update { it.copy(customFolderUri = uri.toString()) }
-                }
-                .onFailure { error -> _scanMessage.value = "自定义目录扫描失败：${error.message ?: "目录不可用"}" }
+            settingsRepository.update { current ->
+                val next = (current.customFolderUris + uri.toString()).distinct()
+                current.copy(customFolderUri = next.firstOrNull().orEmpty(), customFolderUris = next)
+            }
+            scanLocalMusic()
         }
     }
 
+    fun removeCustomFolder(uri: String) {
+        viewModelScope.launch {
+            settingsRepository.update { current ->
+                val next = current.customFolderUris.filterNot { it == uri }
+                current.copy(customFolderUri = next.firstOrNull().orEmpty(), customFolderUris = next)
+            }
+            scanLocalMusic()
+        }
+    }
+
+    fun restoreCustomFolders(uris: List<String>) {
+        if (uris.isNotEmpty()) scanLocalMusic()
+    }
+
     fun restoreCustomFolder(uri: String) {
-        if (uri.isNotBlank()) scanCustomFolder(Uri.parse(uri))
+        if (uri.isNotBlank()) restoreCustomFolders(listOf(uri))
     }
 
     fun playLocal(track: Track) {
@@ -203,6 +226,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { error ->
                     _playlistMessage.value = if (cached.isNotEmpty()) "正在使用本地歌单；同步失败" else error.message ?: "我的歌单加载失败"
                 }
+        }
+    }
+
+    fun loadLocalPlaylists() {
+        viewModelScope.launch { _localPlaylists.value = playlistRepository.localPlaylists() }
+    }
+
+    fun createLocalPlaylist(name: String) {
+        viewModelScope.launch {
+            val created = playlistRepository.createLocalPlaylist(name)
+            _localPlaylists.value = _localPlaylists.value + created
+        }
+    }
+
+    fun deleteLocalPlaylist(playlist: PlaylistSummary) {
+        if (playlist.source != Track.Source.LOCAL) return
+        viewModelScope.launch {
+            playlistRepository.deleteLocalPlaylist(playlist.id)
+            _localPlaylists.value = _localPlaylists.value.filterNot { it.id == playlist.id }
+            if (_playlistDetail.value?.summary?.id == playlist.id) _playlistDetail.value = null
         }
     }
 

@@ -89,7 +89,10 @@ data class AppSettings(
     val chkszBaseUrl: String = "https://api.chksz.com",
     val useChkszBackup: Boolean = false,
     val chkszApiKey: String = "",
+    /** 旧版本单目录配置，保留用于迁移兼容。 */
     val customFolderUri: String = "",
+    /** 用户选择的多个本地音乐根目录，按选择顺序持久化。 */
+    val customFolderUris: List<String> = emptyList(),
     val ncmCookie: String = "",
     val ncmNickname: String = "",
     val ncmUserId: Long = 0L,

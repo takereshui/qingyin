@@ -26,6 +26,7 @@ class SettingsRepository(private val context: Context) {
         val useChkszBackup = booleanPreferencesKey("use_chksz_backup")
         val chkszApiKey = stringPreferencesKey("chksz_api_key")
         val customFolderUri = stringPreferencesKey("custom_folder_uri")
+        val customFolderUris = stringPreferencesKey("custom_folder_uris")
         val ncmCookie = stringPreferencesKey("ncm_cookie")
         val ncmNickname = stringPreferencesKey("ncm_nickname")
         val ncmUserId = longPreferencesKey("ncm_user_id")
@@ -45,6 +46,7 @@ class SettingsRepository(private val context: Context) {
             useChkszBackup = preferences[Keys.useChkszBackup] ?: false,
             chkszApiKey = preferences[Keys.chkszApiKey] ?: "",
             customFolderUri = preferences[Keys.customFolderUri] ?: "",
+            customFolderUris = (preferences[Keys.customFolderUris].orEmpty().split('|').filter(String::isNotBlank) + (preferences[Keys.customFolderUri] ?: "")).distinct(),
             ncmCookie = preferences[Keys.ncmCookie] ?: "",
             ncmNickname = preferences[Keys.ncmNickname] ?: "",
             ncmUserId = preferences[Keys.ncmUserId] ?: 0L,
@@ -66,6 +68,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.useChkszBackup] = next.useChkszBackup
             preferences[Keys.chkszApiKey] = next.chkszApiKey.trim()
             preferences[Keys.customFolderUri] = next.customFolderUri
+            preferences[Keys.customFolderUris] = next.customFolderUris.filter(String::isNotBlank).distinct().joinToString("|")
             preferences[Keys.ncmCookie] = next.ncmCookie
             preferences[Keys.ncmNickname] = next.ncmNickname
             preferences[Keys.ncmUserId] = next.ncmUserId

@@ -73,6 +73,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppTab(val title: String) { HOME("首页"), SEARCH("搜索"), LOCAL("本地"), DOWNLOADS("下载"), MINE("我的") }
+private enum class AppTab(val title: String) { HOME("首页"), SEARCH("搜索"), PLAYLISTS("歌单"), LOCAL("本地"), DOWNLOADS("下载"), MINE("我的") }
 
 @Composable
 private fun QingyinApp(model: MainViewModel = viewModel()) {
@@ -139,6 +140,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val ncmQrLogin by model.ncmQrLogin.collectAsStateWithLifecycle()
     val myPlaylists by model.myPlaylists.collectAsStateWithLifecycle()
     val importedPlaylists by model.importedPlaylists.collectAsStateWithLifecycle()
+    val localPlaylists by model.localPlaylists.collectAsStateWithLifecycle()
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val downloadedTracks by model.downloadedTracks.collectAsStateWithLifecycle()
     val downloadMessage by model.downloadMessage.collectAsStateWithLifecycle()
@@ -153,6 +155,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     var donateVisible by remember { mutableStateOf(false) }
     var ncmAccountVisible by remember { mutableStateOf(false) }
     var playlistImportSource by remember { mutableStateOf<Track.Source?>(null) }
+    var localPlaylistCreateVisible by remember { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
     val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) { model.scanLocalMusic(); model.refreshDownloads() }
@@ -161,9 +164,9 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         uri?.let(model::scanCustomFolder)
     }
 
-    LaunchedEffect(Unit) { if (model.hasMediaPermission()) { model.scanLocalMusic(); model.refreshDownloads() } }
+    LaunchedEffect(Unit) { model.scanLocalMusic(); model.refreshDownloads() }
     LaunchedEffect(settings.importedPlaylistIds) { model.loadImportedPlaylists() }
-    LaunchedEffect(settings.customFolderUri) { model.restoreCustomFolder(settings.customFolderUri) }
+    LaunchedEffect(settings.customFolderUris) { model.restoreCustomFolders(settings.customFolderUris) }
     LaunchedEffect(settings.ncmCookie, settings.useBackupNcmc) { model.loadDaily() }
     LaunchedEffect(settings.ncmCookie, settings.ncmUserId, settings.useBackupNcmc) { model.loadMyPlaylists() }
 
@@ -174,8 +177,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                 Column {
                     if (player.current != null) MiniPlayer(player, model, onQueue = { queueVisible = true }, onOpen = { playerVisible = true })
                     NavigationBar {
-                        listOf(AppTab.HOME, AppTab.SEARCH, AppTab.LOCAL, AppTab.DOWNLOADS, AppTab.MINE).forEach { item ->
-                            val icon = when (item) { AppTab.HOME -> Icons.Default.Home; AppTab.SEARCH -> Icons.Default.Search; AppTab.LOCAL -> Icons.Default.LibraryMusic; AppTab.DOWNLOADS -> Icons.Default.Download; AppTab.MINE -> Icons.Default.AccountCircle }
+                        listOf(AppTab.HOME, AppTab.SEARCH, AppTab.PLAYLISTS, AppTab.LOCAL, AppTab.DOWNLOADS, AppTab.MINE).forEach { item ->
+                            val icon = when (item) { AppTab.HOME -> Icons.Default.Home; AppTab.SEARCH -> Icons.Default.Search; AppTab.PLAYLISTS -> Icons.Default.LibraryMusic; AppTab.LOCAL -> Icons.Default.LibraryMusic; AppTab.DOWNLOADS -> Icons.Default.Download; AppTab.MINE -> Icons.Default.AccountCircle }
                             NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) })
                         }
                     }
@@ -184,11 +187,13 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding()) {
                 when (tab) {
-                    AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, model)
+                                                AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, model)
                     AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, model)
-                    AppTab.LOCAL -> LocalScreen(tracks, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
+                    AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
+                    AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
                     AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, downloadMessage, model)
-                    AppTab.MINE -> MineScreen(settings, (myPlaylists + importedPlaylists).distinctBy { it.id }, playlistMessage, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                    AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+
                 }
             }
         }
@@ -198,6 +203,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
         if (ncmAccountVisible) NcmAccountDialog(settings, onDismiss = { ncmAccountVisible = false }, onLogout = { model.logoutNcm(); ncmAccountVisible = false })
+        if (localPlaylistCreateVisible) CreateLocalPlaylistDialog(onDismiss = { localPlaylistCreateVisible = false }, onCreate = { name -> model.createLocalPlaylist(name); localPlaylistCreateVisible = false })
         playlistImportSource?.let { source -> PlaylistImportDialog(source, onDismiss = { playlistImportSource = null }, onImport = { input -> model.importPlaylist(source, input); playlistImportSource = null }) }
         playlistDetail?.let { detail -> PlaylistDetailScreen(detail, model, onBack = model::closePlaylist) }
     }
@@ -286,14 +292,28 @@ private fun QuickCard(title: String, subtitle: String, icon: androidx.compose.ui
 }
 
 @Composable
-private fun LocalScreen(tracks: List<Track>, message: String, model: MainViewModel, onRequestPermission: () -> Unit, onPickFolder: () -> Unit) {
+private fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message: String, model: MainViewModel, onRequestPermission: () -> Unit, onPickFolder: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) { Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilledTonalButton(onClick = onPickFolder) { Text("文件夹") }
-                    FilledTonalButton(onClick = { if (model.hasMediaPermission()) model.scanLocalMusic() else onRequestPermission() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描") }
+                    FilledTonalButton(onClick = onPickFolder) { Text("添加文件夹") }
+                    FilledTonalButton(onClick = { model.scanLocalMusic() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描") }
+                }
+            }
+        }
+        item {
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("扫描目录（${folderUris.size}）", fontWeight = FontWeight.SemiBold)
+                    if (folderUris.isEmpty()) Text("尚未添加自定义目录；也会扫描系统媒体库。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    folderUris.forEach { uri ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(uri.substringAfterLast('/').ifBlank { uri }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = { model.removeCustomFolder(uri) }) { Text("移除") }
+                        }
+                    }
                 }
             }
         }
@@ -348,7 +368,38 @@ private fun DownloadTaskRow(entry: DownloadEntry) {
 }
 
 @Composable
-private fun MineScreen(settings: AppSettings, playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
+private fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage: String, model: MainViewModel, onCreateLocal: () -> Unit) {
+    val online = playlists.filter { it.source != Track.Source.LOCAL }
+    val local = playlists.filter { it.source == Track.Source.LOCAL }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) { Text("歌单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("线上同步与本地自建歌单", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                FilledTonalButton(onClick = onCreateLocal) { Text("新建本地") }
+            }
+        }
+        if (playlistMessage.isNotBlank()) item { Text(playlistMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Text("线上歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        if (online.isEmpty()) item { EmptyHint("登录网易云或导入 QQ / 网易云歌单后，会在这里同步显示。") }
+        items(online.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.openPlaylist(playlist, force = true) }) }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        item { Text("本地歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+        if (local.isEmpty()) item { EmptyHint("点击右上角“新建本地”创建一个本地歌单。") }
+        items(local.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.deleteLocalPlaylist(playlist) }) }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             FilledTonalButton(
@@ -367,22 +418,26 @@ private fun MineScreen(settings: AppSettings, playlists: List<PlaylistSummary>, 
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("我的歌单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { model.loadMyPlaylists(force = true) }, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.Refresh, "刷新我的歌单") }
-                IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.MoreVert, "设置") }
-            }
-        }
-        if (playlistMessage.isNotBlank()) item { Text(playlistMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (settings.ncmCookie.isNotBlank() && playlists.isEmpty()) item { EmptyHint("登录后会自动同步并显示你的网易云歌单") }
-        items(playlists.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.openPlaylist(playlist, force = true) }) }
-                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Text("歌单已移动到下方独立的“歌单”入口。这里保留账号、导入、设置和赞赏功能。", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth().height(44.dp)) { Text("赞赏支持") } }
     }
+}
+
+@Composable
+private fun CreateLocalPlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新建本地歌单") },
+        text = {
+            TextField(value = name, onValueChange = { name = it }, label = { Text("歌单名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        },
+        confirmButton = { FilledTonalButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) { Text("创建") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
