@@ -5,7 +5,7 @@
     route: 'home', home: { daily: [], playlists: [] }, discover: {}, local: [], localFolders: [], localIndex: null, localLoaded: false, localSnapshot: null,
     downloads: [], search: [], myPlaylists: [], qqProfile: null, qqPlaylists: [], playlistCache: new Map(), libraryLoaded: false, history: Store.getHistory?.() || [], detailStack: [],
   };
-  let toastTimer = null, qrLoginStop = null, playerView = 'disc';
+  let toastTimer = null, qrLoginStop = null, sheetCleanup = null, playerView = 'disc';
   const FALLBACK_COVER = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect fill="#eceef1" width="120" height="120"/><text x="50%" y="56%" fill="#e83a3a" font-size="38" text-anchor="middle">♪</text></svg>');
 
   function escapeHTML(v) { return String(v ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c])); }
@@ -378,9 +378,46 @@
     $('#btn-player-toggle').textContent = playing ? 'Ⅱ' : '▶';
     $('#player-full').classList.toggle('is-playing', !!playing);
   }
+  function modeMeta(value = Player.mode) {
+    return ({ loop: { icon: '↻', label: '列表循环' }, single: { icon: '①', label: '单曲循环' }, shuffle: { icon: '⇝', label: '随机播放' } })[value] || { icon: '↻', label: '列表循环' };
+  }
+  function updateModeControl(value = Player.mode) {
+    const meta = modeMeta(value), button = $('#btn-player-mode');
+    if (!button) return;
+    button.textContent = meta.icon; button.setAttribute('aria-label', meta.label); button.title = meta.label;
+  }
+  function openQueueSheet() {
+    const render = () => {
+      const queue = Player.queue, active = Player.index, meta = modeMeta();
+      const rows = queue.map((song, rowIndex) => {
+        const isActive = rowIndex === active;
+        return `<li class="queue-row${isActive ? ' active' : ''}" data-queue-index="${rowIndex}"><button class="queue-play" data-queue-play="${rowIndex}" aria-label="播放 ${escapeHTML(song.name || '未知歌曲')}"><span class="queue-index">${isActive ? '♪' : rowIndex + 1}</span><img src="${FALLBACK_COVER}" data-queue-cover="${rowIndex}" alt="封面"><span class="queue-copy"><strong>${escapeHTML(song.name || '未知歌曲')}</strong><small>${escapeHTML([song.artists || '未知歌手', song.album || ''].filter(Boolean).join(' · '))}</small></span></button>${queue.length > 1 ? `<button class="queue-remove" data-queue-remove="${rowIndex}" aria-label="从队列移除 ${escapeHTML(song.name || '未知歌曲')}">×</button>` : ''}</li>`;
+      }).join('');
+      $('#sheet-content').innerHTML = `<div class="queue-sheet"><div class="queue-toolbar"><span>${queue.length} 首 · ${meta.label}</span><div><button id="btn-queue-mode" class="queue-tool" aria-label="切换播放模式">${meta.icon}</button><button id="btn-queue-clear" class="queue-clear"${queue.length <= 1 ? ' disabled' : ''}>清空</button></div></div><ol id="queue-list" class="queue-list">${rows || '<li class="queue-empty">播放队列为空</li>'}</ol></div>`;
+      $$('#queue-list [data-queue-cover]').forEach(img => { const song = queue[Number(img.dataset.queueCover)]; if (song) setImage(img, song.picUrl); });
+      $('#btn-queue-mode')?.addEventListener('click', () => { const next = Player.cycleMode(); toast(`已切换为${modeMeta(next).label}`); render(); });
+      $('#btn-queue-clear')?.addEventListener('click', () => { Player.clearQueue(); toast('已保留当前歌曲'); render(); });
+      $('#queue-list')?.addEventListener('click', event => {
+        const playButton = event.target.closest('[data-queue-play]');
+        const removeButton = event.target.closest('[data-queue-remove]');
+        if (playButton) { const target = Number(playButton.dataset.queuePlay); Player.playAt(target); closeSheet(); return; }
+        if (removeButton) { const target = Number(removeButton.dataset.queueRemove); const removed = Player.removeAt(target); if (removed) { toast('已从播放队列移除'); render(); } }
+      });
+    };
+    openSheet('当前播放', ''); render();
+    const unsubscribe = Player.on(type => { if (type === 'queue' || type === 'mode') render(); });
+    sheetCleanup = unsubscribe;
+  }
 
-  function openSheet(title, html) { $('#sheet-title').textContent = title; $('#sheet-content').innerHTML = html; $('#sheet').classList.remove('hidden'); }
-  function closeSheet() { if (qrLoginStop) { qrLoginStop(); qrLoginStop = null; } $('#sheet').classList.add('hidden'); }
+  function openSheet(title, html) {
+    if (sheetCleanup) { try { sheetCleanup(); } catch {} sheetCleanup = null; }
+    $('#sheet-title').textContent = title; $('#sheet-content').innerHTML = html; $('#sheet').classList.remove('hidden');
+  }
+  function closeSheet() {
+    if (qrLoginStop) { qrLoginStop(); qrLoginStop = null; }
+    if (sheetCleanup) { try { sheetCleanup(); } catch {} sheetCleanup = null; }
+    $('#sheet').classList.add('hidden');
+  }
   function openLogin() {
     closeSheet();
     openSheet('登录网易云账号', `<div class="qr-login">
@@ -448,9 +485,10 @@
       const result = nativeQQ('qqQrCheck', sessionId);
       if (result.state === 'success') return finish(result.profile);
       if (result.state === 'scanned') status('已扫码，请在 QQ App 中确认登录');
-      else if (result.state === 'authorized') status('正在完成 QQ 音乐授权…');
+      else if (result.state === 'authorized') status(result.message || 'QQ 已确认，正在建立 QQ 音乐会话…');
+      else if (result.state === 'refused') { stop(); status(result.message || '已在 QQ 中取消登录，请刷新二维码重试'); }
       else if (result.state === 'expired') { stop(); status('二维码已过期，请点击刷新二维码'); }
-      else if (result.state === 'failed') { stop(); status(result.message || 'QQ 登录失败，请刷新二维码'); }
+      else if (result.state === 'failed') { stop(); status(result.message || `QQ 登录失败（${result.stage || 'unknown'}），请刷新二维码`); }
       else status('等待 QQ App 扫码');
     };
     const create = () => {
@@ -502,13 +540,13 @@
       }
     });
     $('#btn-refresh-downloads').addEventListener('click', renderDownloads); $('#btn-login').addEventListener('click', openLogin); $('#btn-login-qq').addEventListener('click', openQQLogin); $('#btn-account').addEventListener('click', () => { if (!isLoggedIn() && !qqLoggedIn()) openLogin(); }); $('#btn-library-settings').addEventListener('click', openSettings); $('#btn-library-refresh').addEventListener('click', () => loadLibrary({ force: true })); $('#btn-library-fav').addEventListener('click', () => { const list = Store.getFavs(); showDetail({ type: 'fav', data: { name: '我喜欢的音乐', coverImgUrl: '', tracks: list } }); }); $('#btn-library-history').addEventListener('click', () => { const list = Store.getHistory?.() || []; showDetail({ type: 'history', data: { name: '最近播放', coverImgUrl: '', tracks: list } }); });
-    window.addEventListener('nativeAppBack', handleAppBack); $('#btn-detail-back').addEventListener('click', backFromDetail); $('#btn-mini-open').addEventListener('click', openPlayer); $('#btn-mini-play').addEventListener('click', () => Player.toggle()); $('#btn-mini-next').addEventListener('click', () => Player.next()); $('#btn-player-close').addEventListener('click', closePlayer); $('#btn-player-view').addEventListener('click', togglePlayerView); $('#now-playing').addEventListener('click', togglePlayerView); $('#btn-player-toggle').addEventListener('click', () => Player.toggle()); $('#btn-player-prev').addEventListener('click', () => Player.prev()); $('#btn-player-next').addEventListener('click', () => Player.next()); $('#btn-player-mode').addEventListener('click', () => { const m = Player.cycleMode(); $('#btn-player-mode').textContent = ({ loop: '↻', single: '①', shuffle: '⇝' })[m]; }); $('#btn-player-fav').addEventListener('click', toggleFavorite); $('#btn-player-fav-secondary').addEventListener('click', toggleFavorite); $('#btn-lyric-rematch').addEventListener('click', () => { Player.refreshCurrentLyric(); toast('正在重新匹配歌词'); });     $('#btn-player-queue').addEventListener('click', () => toast(`播放队列 ${Player.queue.length} 首`)); $('#lyrics').addEventListener('click', recoverLyricsIfEmpty);
+    window.addEventListener('nativeAppBack', handleAppBack); $('#btn-detail-back').addEventListener('click', backFromDetail); $('#btn-mini-open').addEventListener('click', openPlayer); $('#btn-mini-play').addEventListener('click', () => Player.toggle()); $('#btn-mini-next').addEventListener('click', () => Player.next()); $('#btn-player-close').addEventListener('click', closePlayer); $('#btn-player-view').addEventListener('click', togglePlayerView); $('#now-playing').addEventListener('click', togglePlayerView); $('#btn-player-toggle').addEventListener('click', () => Player.toggle()); $('#btn-player-prev').addEventListener('click', () => Player.prev()); $('#btn-player-next').addEventListener('click', () => Player.next()); $('#btn-player-mode').addEventListener('click', () => { const next = Player.cycleMode(); updateModeControl(next); toast(`已切换为${modeMeta(next).label}`); }); $('#btn-player-fav').addEventListener('click', toggleFavorite); $('#btn-player-fav-secondary').addEventListener('click', toggleFavorite); $('#btn-lyric-rematch').addEventListener('click', () => { Player.refreshCurrentLyric(); toast('正在重新匹配歌词'); }); $('#btn-player-queue').addEventListener('click', openQueueSheet); $('#lyrics').addEventListener('click', recoverLyricsIfEmpty);
 
     const seekBar = $('#player-seek'); const finishSeek = event => { Player.seek(Number(event.target.value) / 1000); Player.setSeeking(false); };
     seekBar.addEventListener('pointerdown', () => Player.setSeeking(true)); seekBar.addEventListener('pointercancel', finishSeek); seekBar.addEventListener('pointerup', finishSeek); seekBar.addEventListener('input', event => Player.seek(Number(event.target.value) / 1000)); seekBar.addEventListener('change', finishSeek); $('#btn-sheet-close').addEventListener('click', closeSheet); $('#sheet').addEventListener('click', e => { if (e.target === $('#sheet')) closeSheet(); });
-    Player.on((type, payload) => { if (type === 'song') updatePlayer(payload); if (type === 'play') updatePlayState(true); if (type === 'pause') updatePlayState(false); if (type === 'time') { $('#mini-progress').style.width = `${Math.round(payload.ratio * 100)}%`; $('#player-seek').value = Math.round(payload.ratio * 1000); $('#time-current').textContent = payload.curText; $('#time-total').textContent = payload.durText; } if (type === 'lyric') renderLyrics(payload); if (type === 'lyricIndex') updateLyric(payload); if (type === 'lyricStatus') $('#lyric-status').textContent = payload.message || ''; if (type === 'seekRecovery') toast(payload); if (type === 'error') toast(payload || '播放失败'); });
+    Player.on((type, payload) => { if (type === 'song') updatePlayer(payload); if (type === 'play') updatePlayState(true); if (type === 'pause') updatePlayState(false); if (type === 'mode') updateModeControl(payload); if (type === 'time') { $('#mini-progress').style.width = `${Math.round(payload.ratio * 100)}%`; $('#player-seek').value = Math.round(payload.ratio * 1000); $('#time-current').textContent = payload.curText; $('#time-total').textContent = payload.durText; } if (type === 'lyric') renderLyrics(payload); if (type === 'lyricIndex') updateLyric(payload); if (type === 'lyricStatus') $('#lyric-status').textContent = payload.message || ''; if (type === 'seekRecovery') toast(payload); if (type === 'error') toast(payload || '播放失败'); });
   }
 
-  function init() { applyTheme(); Player.bind(); bind(); updatePlayState(false); void hydrateLocalCache(); loadHome(); }
+  function init() { applyTheme(); Player.bind(); bind(); updatePlayState(false); updateModeControl(Player.mode); void hydrateLocalCache(); loadHome(); }
   document.addEventListener('DOMContentLoaded', init);
 })();
