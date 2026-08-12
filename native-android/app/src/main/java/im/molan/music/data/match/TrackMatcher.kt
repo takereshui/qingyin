@@ -13,10 +13,10 @@ import kotlin.math.max
  * 保护门槛后，本地音源才会替代线上解析，兼顾本地优先与避免误播。
  */
 object TrackMatcher {
-    /** 常规模糊匹配的基础接受分数；更强的标题/文件名模式使用各自门槛。 */
-    const val ACCEPTANCE_SCORE = 45f
-    private const val LOCAL_DURATION_TOLERANCE_MS = 6_000L
-    private const val DOWNLOADED_DURATION_TOLERANCE_MS = 8_000L
+    /** 常规模糊匹配仅作为严格的双信号兜底，不以低分相似度替代线上音源。 */
+    const val ACCEPTANCE_SCORE = 68f
+    private const val LOCAL_DURATION_TOLERANCE_MS = 4_000L
+    private const val DOWNLOADED_DURATION_TOLERANCE_MS = 6_000L
 
     enum class MatchMode {
         TITLE_ARTIST_EXACT,
@@ -48,8 +48,8 @@ object TrackMatcher {
         val artist = normalize(track.artist)
         return buildSet {
             titles.forEach { title ->
+                // 仅用完整规范标题作为普通候选键；不再用短前缀，以免相同开头的歌曲进入候选集。
                 add("t:$title")
-                if (title.length >= 3) add("p:${title.take(3)}")
                 if (artist.isNotBlank()) add("at:$artist|$title")
             }
         }
@@ -84,7 +84,8 @@ object TrackMatcher {
         val metadataScore = bestTextScore(targetTitles, titleForms(local.title))
         val filenameScore = local.localFileName?.let { bestTextScore(targetTitles, titleForms(it)) } ?: 0f
         val titleScore = max(metadataScore, filenameScore)
-        if (titleScore < 38f) return null
+        // 名称本身未达到较高相似度时，时长接近或艺人偶然相同都不足以构成匹配。
+        if (titleScore < 70f) return null
 
         val artistScore = optionalScore(target.artist, local.artist, ::artistScore)
         val albumScore = optionalScore(target.album, local.album, ::textScore)
@@ -101,11 +102,12 @@ object TrackMatcher {
         }
         val finalScore = when {
             titleExact && artistExact -> 100f
-            titleExact && artistScore == null -> max(baseScore, 84f)
-            titleExact && (artistScore ?: 0f) >= 55f -> max(baseScore, 92f)
-            titleExact -> max(baseScore, 68f)
-            fromFileName && titleVariant -> max(baseScore, if (artistScore != null && artistScore >= 45f) 88f else 72f)
-            titleVariant && artistScore != null && artistScore >= 45f -> max(baseScore, 78f)
+            titleExact && artistScore == null -> max(baseScore, 88f)
+            titleExact && (artistScore ?: 0f) >= 70f -> max(baseScore, 94f)
+            // 已知艺人明显不同的同名歌曲不能靠标题单独命中。
+            titleExact -> max(baseScore, 60f)
+            fromFileName && titleVariant -> max(baseScore, if ((artistScore ?: 0f) >= 70f) 90f else 58f)
+            titleVariant && (artistScore ?: 0f) >= 70f -> max(baseScore, 84f)
             else -> baseScore
         }.coerceIn(0f, 100f)
 
@@ -122,12 +124,11 @@ object TrackMatcher {
     private fun isAccepted(result: Result): Boolean = when (result.mode) {
         MatchMode.TITLE_ARTIST_EXACT -> true
         // 单标题精确命中适合媒体标签缺失的本地库；若艺人明确冲突仍要求较高分。
-        MatchMode.TITLE_EXACT -> result.score >= 68f
-        MatchMode.TITLE_VARIANT -> result.score >= 70f && result.titleScore >= 88f
-        MatchMode.FILE_NAME -> result.score >= 62f && result.titleScore >= 88f
-        // 最宽松模式仍必须同时满足“标题足够接近”或“标题+艺人双信号”。
-        MatchMode.FUZZY -> result.score >= ACCEPTANCE_SCORE &&
-            (result.titleScore >= 74f || (result.titleScore >= 50f && (result.artistScore ?: 0f) >= 55f))
+        MatchMode.TITLE_EXACT -> result.score >= 88f && result.titleScore >= 99.5f
+        MatchMode.TITLE_VARIANT -> result.score >= 84f && result.titleScore >= 92f && (result.artistScore ?: 0f) >= 70f
+        MatchMode.FILE_NAME -> result.score >= 90f && result.titleScore >= 92f && (result.artistScore ?: 0f) >= 70f
+        // 模糊匹配必须同时具备极高标题相似度与较强艺人相似度，绝不接受单一弱信号。
+        MatchMode.FUZZY -> result.score >= ACCEPTANCE_SCORE && result.titleScore >= 90f && (result.artistScore ?: 0f) >= 70f
     }
 
     private fun durationCompatible(target: Track, local: Track): Boolean {
@@ -137,7 +138,8 @@ object TrackMatcher {
     }
 
     private fun optionalScore(a: String, b: String, scorer: (String, String) -> Float): Float? =
-        if (!isValidInfo(a)) null else if (!isValidInfo(b)) 0f else scorer(a, b)
+        // 缺失标签不等价于冲突；明确且有效的双方标签才参与负向或正向评分。
+        if (!isValidInfo(a) || !isValidInfo(b)) null else scorer(a, b)
 
     private fun artistScore(a: String, b: String): Float {
         val left = splitArtists(a)

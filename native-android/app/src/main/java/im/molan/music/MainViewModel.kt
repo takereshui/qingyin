@@ -399,9 +399,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val indexed = TrackMatcher.indexKeys(remote)
             .flatMap { key -> localMatchIndex[key].orEmpty() }
             .distinctBy { it.id }
-        // 文件标签错误或中英文标点差异过大时，索引键可能没有交集；此时才回退全量评分。
-        val candidates = indexed.ifEmpty(::localPlaybackCandidates)
-        val result = TrackMatcher.findBest(remote, candidates)
+        // 索引没有共同的规范标题键或艺人标题键即视为不匹配；不再全量评分，
+        // 避免名称无关的歌曲因短字符串、时长或偶然元数据而被错误标为“本地”。
+        if (indexed.isEmpty()) {
+            localNoMatchCache += cacheKey
+            return null
+        }
+        val result = TrackMatcher.findBest(remote, indexed)
         if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
         return result
     }
