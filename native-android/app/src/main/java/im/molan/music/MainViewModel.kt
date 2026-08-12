@@ -458,13 +458,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _playlistMessage.value = "正在同步《${playlist.name}》到本地…"
             runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
                 .onSuccess { detail ->
-                    _playlistDetail.value = detail
-                    val ids = (settings.value.importedPlaylistIds + detail.summary.id).distinct()
-                    if (ids != settings.value.importedPlaylistIds) {
-                        settingsRepository.update { it.copy(importedPlaylistIds = ids) }
+                    val localId = "local:sync:${detail.summary.source.name.lowercase()}:${detail.summary.id}"
+                    val existed = _localPlaylists.value.any { it.id == localId }
+                    val localDetail = playlistRepository.syncAsLocalPlaylist(detail)
+                    _playlistDetail.value = localDetail
+                    _localPlaylists.value = _localPlaylists.value.filterNot { it.id == localDetail.summary.id } + localDetail.summary
+                    _playlistMessage.value = if (existed) {
+                        "已覆盖更新本地歌单《${localDetail.summary.name}》的 ${localDetail.tracks.size} 首曲目；音频不会自动下载"
+                    } else {
+                        "已新建本地歌单《${localDetail.summary.name}》，共 ${localDetail.tracks.size} 首曲目；音频不会自动下载"
                     }
-                    _importedPlaylists.value = (_importedPlaylists.value.filterNot { it.id == detail.summary.id } + detail.summary)
-                    _playlistMessage.value = "已同步 ${detail.tracks.size} 首曲目的歌单数据到本地；音频不会自动下载"
                 }
                 .onFailure { error ->
                     _playlistMessage.value = "歌单同步失败：${error.message ?: "无法读取歌单曲目"}"

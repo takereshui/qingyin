@@ -46,6 +46,31 @@ class PlaylistRepository(
         fileFor("detail:$id").delete()
     }
 
+    /**
+     * 将线上歌单落为一份确定性的本地副本。相同来源和歌单 ID 复用同一本地 ID，
+     * 因此后续同步会整体覆盖曲目、封面与标题，不会生成重复的本地歌单。
+     */
+    suspend fun syncAsLocalPlaylist(detail: PlaylistDetail): PlaylistDetail = withContext(Dispatchers.IO) {
+        require(detail.summary.source != Track.Source.LOCAL) { "本地歌单不需要同步副本" }
+        val sourceLabel = when (detail.summary.source) {
+            Track.Source.QQ -> "QQ 音乐"
+            Track.Source.NETEASE -> "网易云音乐"
+            else -> "线上音乐"
+        }
+        val localId = "local:sync:${detail.summary.source.name.lowercase()}:${detail.summary.id}"
+        val localSummary = detail.summary.copy(
+            id = localId,
+            creator = "同步自 $sourceLabel",
+            trackCount = detail.tracks.size,
+            source = Track.Source.LOCAL,
+        )
+        val localDetail = PlaylistDetail(localSummary, detail.tracks)
+        val existing = readLocalSummaries()
+        writeLocalSummaries(existing.filterNot { it.id == localId } + localSummary)
+        writeDetail(localId, localDetail)
+        localDetail
+    }
+
     /** 供界面优先展示本地持久化的歌单目录；即使缓存已过期也可离线使用。 */
     suspend fun cachedPlaylists(userId: Long): List<PlaylistSummary> = withContext(Dispatchers.IO) {
         readList(userId)?.second.orEmpty()

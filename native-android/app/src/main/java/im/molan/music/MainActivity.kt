@@ -567,7 +567,7 @@ private fun PlaylistDetailScreen(detail: PlaylistDetail, model: MainViewModel, o
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playNcm(track) }) }
+                    items(detail.tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playOnline(track) }) }
                 }
             }
         }
