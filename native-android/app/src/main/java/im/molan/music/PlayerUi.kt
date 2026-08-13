@@ -1,5 +1,6 @@
 package im.molan.music
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
@@ -630,7 +631,7 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
     )
 }
 
-private fun LazyListScope.QualitySelector(title: String, entries: List<Any>, selected: Any, onSelect: (Any) -> Unit) {
+private fun <T : Any> LazyListScope.QualitySelector(title: String, entries: List<T>, selected: T, onSelect: (T) -> Unit) {
     item { Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
     items(entries) { option ->
         Card(
@@ -638,7 +639,12 @@ private fun LazyListScope.QualitySelector(title: String, entries: List<Any>, sel
             colors = CardDefaults.cardColors(containerColor = if (selected == option) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
         ) {
             Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text((option as? AppSettings.Quality)?.label ?: (option as? AppSettings.QqQuality)?.label ?: option.toString(), Modifier.weight(1f))
+                val label = when (option) {
+                    is AppSettings.Quality -> option.label
+                    is AppSettings.QqQuality -> option.label
+                    else -> option.toString()
+                }
+                Text(label, Modifier.weight(1f))
                 if (selected == option) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             }
         }

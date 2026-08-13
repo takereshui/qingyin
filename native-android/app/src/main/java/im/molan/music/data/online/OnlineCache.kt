@@ -7,6 +7,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceInputStream
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
@@ -41,7 +42,7 @@ class OnlineCache(private val context: Context) {
     val spaceBytes: Long get() = runCatching { simpleCache?.getCacheSpace() ?: 0L }.getOrNull() ?: 0L
 
     fun clearAll() {
-        runCatching { simpleCache?.evictAll() }
+        runCatching { simpleCache?.getKeys()?.forEach { key -> simpleCache?.removeResource(key) } }
     }
 
     /**
@@ -54,10 +55,10 @@ class OnlineCache(private val context: Context) {
         runCatching {
             var remaining = cache.getCacheSpace()
             if (remaining <= maxBytes) return@runCatching
-            val keys = cache.getKeys().sortedByDescending { cache.getCachedBytes(it) }
+            val keys = cache.getKeys().sortedByDescending { cache.getCachedBytes(it, 0L, Long.MAX_VALUE) }
             for (key in keys) {
                 if (remaining <= maxBytes) break
-                val size = cache.getCachedBytes(key)
+                val size = cache.getCachedBytes(key, 0L, Long.MAX_VALUE)
                 if (size <= 0L) continue
                 runCatching { cache.removeResource(key) }
                 remaining -= size
@@ -67,7 +68,7 @@ class OnlineCache(private val context: Context) {
 
     fun isFullyCached(url: String): Boolean = runCatching {
         val cache = simpleCache ?: return@runCatching false
-        val length = cache.getContentLength(url)
+        val length = cache.getContentMetadata(url).get(ContentMetadata.KEY_CONTENT_LENGTH, -1L)
         length > 0L && cache.isCached(url, 0L, length)
     }.getOrDefault(false)
 
@@ -78,13 +79,13 @@ class OnlineCache(private val context: Context) {
     fun openCachedStream(url: String): InputStream? {
         val cache = simpleCache ?: return null
         return runCatching {
-            val length = cache.getContentLength(url)
+            val length = cache.getContentMetadata(url).get(ContentMetadata.KEY_CONTENT_LENGTH, -1L)
             if (length <= 0L || !cache.isCached(url, 0L, length)) return null
             val ds = CacheDataSource(cache, null, CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
             val spec = DataSpec.Builder().setUri(Uri.parse(url)).build()
             try {
                 ds.open(spec)
-                DataSourceInputStream(ds)
+                DataSourceInputStream(ds, spec)
             } catch (e: Exception) {
                 runCatching { ds.close() }
                 throw e

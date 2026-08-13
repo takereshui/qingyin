@@ -111,6 +111,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
 
     val overlayOpen = queueVisible || playerVisible || ncmLoginVisible || settingsVisible ||
         donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible
+    val activity = LocalContext.current as? Activity
     val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
     // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
     BackHandler(enabled = !atRoot) {
@@ -129,7 +130,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     }
     // 根页返回：不直接退出应用，仅退回桌面（音乐仍在后台播放，再次打开秒回）。
     BackHandler(enabled = atRoot) {
-        (LocalContext.current as? Activity)?.moveTaskToBack(true)
+        activity?.moveTaskToBack(true)
     }
 
     LaunchedEffect(Unit) { model.scanLocalMusic(); model.refreshDownloads() }

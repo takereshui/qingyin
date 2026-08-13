@@ -228,7 +228,7 @@ class QqRepository(
     }
 
     /** 兼容用户把主地址误填成 https://api.chksz.com/api 的旧配置。 */
-    private fun normalizeApiBase(raw: String) = raw.trim().ifBlank { OFFICIAL_API_BASE }
+    private fun normalizeApiBase(raw: String) = raw.trim().ifBlank { "https://api.chksz.com" }
         .trimEnd('/')
         .removeSuffix("/api")
         .toHttpUrl()

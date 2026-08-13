@@ -49,23 +49,7 @@ fun Track.toMediaItem(): MediaItem {
                 .setExtras(extras)
                 .build(),
         )
-        .setRequestMetadata(
-            RequestMetadata.Builder()
-                .setHttpRequestHeaders(
-                    when (source) {
-                        Track.Source.NETEASE -> mapOf(
-                            "User-Agent" to CHROME_UA,
-                            "Referer" to "https://music.163.com/",
-                        )
-                        Track.Source.QQ -> mapOf(
-                            "User-Agent" to CHROME_UA,
-                            "Referer" to "https://y.qq.com/",
-                        )
-                        else -> emptyMap()
-                    }
-                )
-                .build()
-        )
+        .setRequestMetadata(RequestMetadata.Builder().build())
         .build()
 }
 

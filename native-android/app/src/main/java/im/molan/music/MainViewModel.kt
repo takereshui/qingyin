@@ -43,14 +43,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val app = application as QingyinApplication
     private val localRepository = LocalMusicRepository(application)
     private val customFolderRepository = CustomFolderRepository(application)
-    private val downloadRepository = (application as QingyinApplication).downloadRepository
+    private val downloadRepository = app.downloadRepository
     private val ncmRepository = NcmRepository()
     private val dailyRepository = DailyRepository(application, ncmRepository)
     private val playlistRepository = PlaylistRepository(application, ncmRepository)
     private val qqRepository = QqRepository()
-    private val lyricsRepository = LyricsRepository(ncmRepository, (application as QingyinApplication).database.lyricDao())
+    private val lyricsRepository = LyricsRepository(ncmRepository, app.database.lyricDao())
     private val settingsRepository = SettingsRepository(application)
     val playback = PlaybackConnection(application)
 
@@ -853,7 +854,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 withTimeout(25_000L) { resolveDownloadTrack(track) }
             }.onSuccess { resolved ->
-                val onlineCache = (application as QingyinApplication).onlineCache
+                val onlineCache = app.onlineCache
                 val url = resolved.remoteUrl
                 val cacheHit = url != null && onlineCache.isFullyCached(url)
                 val enqueueResult = if (cacheHit) {
@@ -906,7 +907,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 试听缓存已完整命中：直接从缓存字节写入下载目录，不经网络。 */
     private fun enqueueResolvedFromCache(downloadable: Track, url: String): DownloadRepository.EnqueueResult {
         val (fileName, qualityLabel, referer) = downloadFileSpec(downloadable)
-        val app = application as QingyinApplication
         return downloadRepository.enqueueFromCached(
             url,
             downloadable.title,
@@ -936,18 +936,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = settings.value
         val next = transform(current)
         if (next.cacheLimitBytes != current.cacheLimitBytes) {
-            (application as QingyinApplication).onlineCache.reconfigure(next.cacheLimitBytes)
+            app.onlineCache.reconfigure(next.cacheLimitBytes)
         }
         viewModelScope.launch { settingsRepository.update { transform(it) } }
     }
 
     /** 在线试听缓存占用字节数（仅当前会话实例；未初始化前为 0）。 */
     val onlineCacheSpace: Long
-        get() = (application as QingyinApplication).onlineCache.spaceBytes
+        get() = app.onlineCache.spaceBytes
 
     /** 一键清空在线试听缓存（不影响已下载音乐）。 */
     fun clearOnlineCache() {
-        (application as QingyinApplication).onlineCache.clearAll()
+        app.onlineCache.clearAll()
     }
 
     override fun onCleared() {

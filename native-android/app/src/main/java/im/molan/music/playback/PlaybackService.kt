@@ -29,6 +29,7 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var imageLoader: ImageLoader
+    @Volatile private var serviceDestroyed = false
 
     private val sessionCallback = object : MediaSession.Callback {
         /**
@@ -79,7 +80,7 @@ class PlaybackService : MediaSessionService() {
                 val data = stream.toByteArray()
                 withContext(Dispatchers.Main) {
                     // 服务可能已被销毁（onDestroy 已 release player），此时再遍历会抛 IllegalStateException。
-                    if (session.isReleased) return@withContext
+                    if (serviceDestroyed) return@withContext
                     runCatching {
                         val player = session.player
                         // 遍历寻找队列中匹配的项并更新其元数据（注入位图数据）
@@ -159,6 +160,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceDestroyed = true
         serviceScope.cancel()
         mediaSession?.run {
             player.release()

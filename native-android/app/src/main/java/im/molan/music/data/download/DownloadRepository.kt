@@ -360,9 +360,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         customDownloadFolder?.takeIf(String::isNotBlank)?.let { treeUri ->
             return runCatching {
                 val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@runCatching null
-                val target = root.createFile(mime, safeName)
-                val stream = target.openOutputStream("w") ?: return@runCatching null
-                stream.use { out -> file.inputStream().use { it.copyTo(out) } }
+                val target = root.createFile(mime, safeName) ?: return@runCatching null
+                val stream = context.contentResolver.openOutputStream(target.uri, "w") ?: return@runCatching null
+                stream.use { out -> file.inputStream().use { input -> input.copyTo(out) } }
                 file.delete()
                 PublishResult(mediaUri = target.uri.toString())
             }.getOrNull()
