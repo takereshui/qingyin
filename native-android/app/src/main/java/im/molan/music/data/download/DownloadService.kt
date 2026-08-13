@@ -19,11 +19,7 @@ import im.molan.music.R
  * 避免 App 退到后台后下载队列被系统回收而“下载不可用”。
  */
 class DownloadService : Service() {
-    private companion object {
-        const val CHANNEL_ID = "qingyin_downloads"
-        const val NOTIFICATION_ID = 2
-        const val ACTION_STOP = "im.molan.music.action.STOP_DOWNLOAD_SERVICE"
-    }
+
 
     override fun onCreate() {
         super.onCreate()
@@ -83,6 +79,10 @@ class DownloadService : Service() {
     }
 
     companion object {
+        private const val CHANNEL_ID = "qingyin_downloads"
+        private const val NOTIFICATION_ID = 2
+        private const val ACTION_STOP = "im.molan.music.action.STOP_DOWNLOAD_SERVICE"
+
         fun start(context: Context) {
             val intent = Intent(context, DownloadService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

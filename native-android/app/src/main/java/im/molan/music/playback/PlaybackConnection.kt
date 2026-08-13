@@ -39,9 +39,9 @@ class PlaybackConnection(context: Context) {
         override fun onEvents(player: Player, events: Player.Events) {
             if (player.playbackState == Player.STATE_READY) _errorMessage.value = ""
             // 媒体项结构变化时重建队列缓存；纯播放状态/进度走轻量 publishPosition。
-            if (events.contains(Player.EVENT_MEDIA_ITEM_COUNT_CHANGED) ||
-                events.contains(Player.EVENT_MEDIA_ITEMS_CHANGED) ||
-                events.contains(Player.EVENT_MEDIA_ITEM_TRANSITIONED) ||
+            if (events.contains(Player.EVENT_TIMELINE_CHANGED) ||
+                events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) ||
+                events.contains(Player.EVENT_TRACKS_CHANGED) ||
                 events.contains(Player.EVENT_REPEAT_MODE_CHANGED) ||
                 events.contains(Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)
             ) {
