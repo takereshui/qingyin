@@ -58,10 +58,10 @@ class QqRepository(
     suspend fun resolve(settings: AppSettings, track: Track, isDownload: Boolean = false): ResolvedQqTrack = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.QQ) { "该曲目不是 QQ 音源" }
 
-        // 检查地址复用
+        // CDN 约 20min 过期，保守 15min 复用上限
         val now = System.currentTimeMillis()
         val ageMs = now - track.resolvedAt
-        val isExpired = ageMs > 3L * 60 * 60 * 1000
+        val isExpired = ageMs > REMOTE_URL_TTL_MS
         val url = track.remoteUrl
         val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
 
@@ -266,6 +266,8 @@ class QqRepository(
 
     private companion object {
         const val OFFICIAL_API_BASE = "https://api.chksz.com"
+        /** CDN 约 20min 过期，保守 15min 复用上限 */
+        const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
     }
 
     private fun extractPlaylistId(input: String): String {

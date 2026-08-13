@@ -112,9 +112,13 @@ class PlaybackConnection(context: Context) {
         if (track.uri != null) return true
         val url = track.remoteUrl ?: return false
         if (!url.startsWith("https://") && !url.startsWith("http://")) return false
-        // 线上 API 链路通常有几小时有效期；若超过 3 小时则视为过期，需由 ViewModel 触发重新解析。
+        // CDN 约 20min 过期，保守 15min 复用上限
         val ageMs = System.currentTimeMillis() - track.resolvedAt
-        return ageMs in 0..(3L * 60 * 60 * 1000)
+        return ageMs in 0..REMOTE_URL_TTL_MS
+    }
+
+    private companion object {
+        const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
     }
 
     /** 用解析后的同源地址替换当前队列项，队列顺序和当前索引均保持不变。 */

@@ -3,6 +3,7 @@ package im.molan.music.playback
 import android.net.Uri
 import android.os.Bundle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaItem.RequestMetadata
 import androidx.media3.common.MediaMetadata
 import im.molan.music.model.AppSettings
 import im.molan.music.model.Track
@@ -17,6 +18,8 @@ internal const val EXTRA_LOCAL_FILE_NAME = "qingyin_local_file_name"
 internal const val EXTRA_DURATION = "qingyin_duration"
 internal const val EXTRA_RESOLVED_AT = "qingyin_resolved_at"
 private const val PENDING_QUEUE_SCHEME = "qingyin-queue"
+private const val CHROME_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 fun Track.toMediaItem(): MediaItem {
     val extras = Bundle().apply {
@@ -48,6 +51,23 @@ fun Track.toMediaItem(): MediaItem {
                 .setArtworkUri(artworkUri)
                 .setExtras(extras)
                 .build(),
+        )
+        .setRequestMetadata(
+            RequestMetadata.Builder()
+                .setHttpRequestHeaders(
+                    when (source) {
+                        Track.Source.NETEASE -> mapOf(
+                            "User-Agent" to CHROME_UA,
+                            "Referer" to "https://music.163.com/",
+                        )
+                        Track.Source.QQ -> mapOf(
+                            "User-Agent" to CHROME_UA,
+                            "Referer" to "https://y.qq.com/",
+                        )
+                        else -> emptyMap()
+                    }
+                )
+                .build()
         )
         .build()
 }

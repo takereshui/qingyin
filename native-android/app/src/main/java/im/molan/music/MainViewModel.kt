@@ -107,6 +107,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var queueResolveJob: Job? = null
     private var resolvingQueueTrackId: String? = null
     private var backgroundParseJob: Job? = null
+    /** 同一 trackId 仅自动重解析一次，防 IO_NETWORK 死循环 */
+    private var lastAutoReresolveId: String? = null
 
     val settings = settingsRepository.settings.stateIn(
         viewModelScope,
@@ -117,6 +119,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         observeInternalDownloads()
         observeCurrentQueueTrack()
+        observePlaybackNetworkErrors()
         loadLocalPlaylists()
     }
 
@@ -451,9 +454,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playback.snapshot.collect { snapshot ->
                 val current = snapshot.current ?: return@collect
                 val needsResolve = !playback.isTrackPlayable(current) && (current.source == Track.Source.NETEASE || current.source == Track.Source.QQ)
-                if (needsResolve) resolveCurrentQueueTrack(current) else ensureLyricsForCurrent(current)
+                if (needsResolve) resolveCurrentQueueTrack(current) else {
+                    // 成功就绪后允许下次网络失败再自动重试该 id
+                    if (lastAutoReresolveId == current.id) lastAutoReresolveId = null
+                    ensureLyricsForCurrent(current)
+                }
                 // 预解析：如果当前曲目已就绪，静默解析下一首，确保护航秒开。
                 if (!needsResolve) lookAheadResolve(snapshot)
+            }
+        }
+    }
+
+    /** CDN URL 过期导致 IO_NETWORK 时，强制清掉 resolved 并重拉一次。 */
+    private fun observePlaybackNetworkErrors() {
+        viewModelScope.launch {
+            playback.errorMessage.collect { msg ->
+                if (msg.isBlank()) return@collect
+                val current = playback.snapshot.value.current ?: return@collect
+                if (current.source != Track.Source.NETEASE && current.source != Track.Source.QQ) return@collect
+                if (!msg.contains("IO_NETWORK") && !msg.contains("网络")) return@collect
+                if (lastAutoReresolveId == current.id) return@collect
+                lastAutoReresolveId = current.id
+                resolveCurrentQueueTrack(current.copy(remoteUrl = null, resolvedAt = 0L))
             }
         }
     }
