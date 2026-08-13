@@ -6,22 +6,32 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 class CustomFolderRepository(private val context: Context) {
+    /** MediaMetadataRetriever 单文件初始化较重，固定并发提取元数据，大目录提速明显。 */
+    private val metadataSemaphore = Semaphore(4)
+
     suspend fun scan(treeUri: Uri, maxDepth: Int = 24): List<Track> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
-        val tracks = mutableListOf<Track>()
-        walk(root, 0, maxDepth, tracks)
-        tracks.sortedWith(compareBy<Track> { it.title.lowercase() }.thenBy { it.artist.lowercase() })
+        val files = mutableListOf<DocumentFile>()
+        walk(root, 0, maxDepth, files)
+        files.map { file ->
+            async { metadataSemaphore.withPermit { file.toTrack() } }
+        }.awaitAll()
+            .sortedWith(compareBy<Track> { it.title.lowercase() }.thenBy { it.artist.lowercase() })
     }
 
-    private fun walk(folder: DocumentFile, depth: Int, maxDepth: Int, out: MutableList<Track>) {
+    private fun walk(folder: DocumentFile, depth: Int, maxDepth: Int, out: MutableList<DocumentFile>) {
         if (depth > maxDepth || !folder.isDirectory) return
         folder.listFiles().forEach { file ->
             when {
                 file.isDirectory -> walk(file, depth + 1, maxDepth, out)
-                file.isFile && file.isMusic() -> out += file.toTrack()
+                file.isFile && file.isMusic() -> out += file
             }
         }
     }

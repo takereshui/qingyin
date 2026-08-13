@@ -632,15 +632,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun localPlaybackCandidates(): List<Track> =
         (_downloadedTracks.value + _localTracks.value).distinctBy { it.id }
 
+    /** 后台重建统一匹配索引，避免几干首候选在主线程逐条跑 indexKeys 造成列表卡顿。 */
+    private var matchIndexGeneration = 0L
     private fun rebuildLocalMatchIndex() {
-        synchronized(localMatchCache) {
-            localMatchIndex = localPlaybackCandidates()
+        val candidates = localPlaybackCandidates()
+        val generation = ++matchIndexGeneration
+        viewModelScope.launch(Dispatchers.Default) {
+            val built = candidates
                 .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
                 .groupBy({ it.first }, { it.second })
-            localMatchCache.clear()
-            localNoMatchCache.clear()
+            // 期间又有更新的重建请求：丢弃本次，防止旧 job 后完成覆盖新索引。
+            if (generation != matchIndexGeneration) return@launch
+            // 读取侧（findLocalMatch）与写入侧都在同一把锁内，替换原子可见。
+            synchronized(localMatchCache) {
+                localMatchIndex = built
+                localMatchCache.clear()
+                localNoMatchCache.clear()
+            }
+            _localMatchFlags.value = emptyMap()
+            // 索引就绪后按当前展示列表回补匹配标志。
+            refreshShownMatchFlags()
         }
-        _localMatchFlags.value = emptyMap()
     }
 
     /**
