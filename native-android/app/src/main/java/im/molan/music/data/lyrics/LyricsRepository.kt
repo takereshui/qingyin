@@ -1,44 +1,40 @@
 package im.molan.music.data.lyrics
 
-import android.content.Context
+import im.molan.music.data.db.LyricDao
+import im.molan.music.data.db.LyricEntity
 import im.molan.music.data.network.NcmRepository
 import im.molan.music.model.AppSettings
 import im.molan.music.model.LyricLine
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.io.File
-import java.security.MessageDigest
 
-class LyricsRepository(private val context: Context, private val ncm: NcmRepository) {
-    private val cacheDir = File(context.filesDir, "lyrics-v2").apply { mkdirs() }
-    private val lyricsTtlMs = 90L * 24 * 60 * 60 * 1000
-    private val missingTtlMs = 7L * 24 * 60 * 60 * 1000
-
-    /** 读取本地持久化歌词；缓存过期后仍不返回，以便调用方触发同步。 */
+/**
+ * 歌词持久化到 Room，按曲目标识（source:id）入库引用；线上刷新后即落库，离线可查。
+ */
+class LyricsRepository(
+    private val ncm: NcmRepository,
+    private val dao: LyricDao,
+) {
+    /** 读取本地持久化歌词；未命中返回 null 以便调用方触发同步。 */
     suspend fun cached(track: Track): List<LyricLine>? = withContext(Dispatchers.IO) {
-        readCache(track.id)?.let { cached ->
-            when {
-                cached.valid -> LrcParser.parse(cached.lrc, cached.translation)
-                cached.missing -> emptyList()
-                else -> null
-            }
+        dao.byKey(track.id)?.let { entity ->
+            if (entity.missing) emptyList() else LrcParser.parse(entity.lyric, entity.translation)
         }
     }
 
-    /** 从线上刷新歌词并写回本地；本地曲目会先按歌名、歌手和时长匹配网易云。 */
+    /** 从线上刷新歌词并写回数据库；本地曲目会先按歌名、歌手和时长匹配网易云。 */
     suspend fun refresh(settings: AppSettings, track: Track): List<LyricLine> = withContext(Dispatchers.IO) {
         val resolved = if (track.source == Track.Source.NETEASE) track else matchLocal(settings, track)
         if (resolved == null) {
-            writeCache(track.id, "", "", missing = true)
+            persist(track, "", "", missing = true)
             return@withContext emptyList()
         }
         runCatching { ncm.lyric(settings, resolved) }
             .fold(
                 onSuccess = { (lrc, translated) ->
                     val parsed = LrcParser.parse(lrc, translated)
-                    writeCache(track.id, lrc, translated, missing = parsed.isEmpty())
+                    persist(track, lrc, translated, missing = parsed.isEmpty())
                     parsed
                 },
                 onFailure = { emptyList() },
@@ -48,9 +44,22 @@ class LyricsRepository(private val context: Context, private val ncm: NcmReposit
     /** 兼容现有调用：没有本地缓存时才访问线上。 */
     suspend fun load(settings: AppSettings, track: Track): List<LyricLine> = cached(track) ?: refresh(settings, track)
 
-    /** QQ 解析等已获得歌词的场景直接写入同一套本地缓存。 */
+    /** QQ 解析等已获得歌词的场景直接写入数据库。 */
     suspend fun save(track: Track, lrc: String, translation: String = "") = withContext(Dispatchers.IO) {
-        writeCache(track.id, lrc, translation, missing = LrcParser.parse(lrc, translation).isEmpty())
+        persist(track, lrc, translation, missing = LrcParser.parse(lrc, translation).isEmpty())
+    }
+
+    private suspend fun persist(track: Track, lrc: String, translation: String, missing: Boolean) {
+        dao.upsert(
+            LyricEntity(
+                trackKey = track.id,
+                source = track.source.name,
+                lyric = lrc,
+                translation = translation,
+                missing = missing,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
     }
 
     private suspend fun matchLocal(settings: AppSettings, local: Track): Track? {
@@ -87,29 +96,4 @@ class LyricsRepository(private val context: Context, private val ncm: NcmReposit
 
     private fun tokenize(value: String = "") = normalize(value).split(Regex("[\\s/、,，&]+"))
         .filter { it.length >= 2 }.toSet()
-
-    private data class Cached(val valid: Boolean, val missing: Boolean, val lrc: String, val translation: String)
-
-    private fun readCache(trackId: String): Cached? = runCatching {
-        val json = JSONObject(cacheFile(trackId).readText())
-        val created = json.optLong("createdAt")
-        val missing = json.optBoolean("missing")
-        val age = System.currentTimeMillis() - created
-        val active = age in 0..if (missing) missingTtlMs else lyricsTtlMs
-        Cached(active && !missing, active && missing, json.optString("lrc"), json.optString("translation"))
-    }.getOrNull()
-
-    private fun writeCache(trackId: String, lrc: String, translation: String, missing: Boolean) {
-        val json = JSONObject()
-            .put("createdAt", System.currentTimeMillis())
-            .put("missing", missing)
-            .put("lrc", lrc)
-            .put("translation", translation)
-        cacheFile(trackId).writeText(json.toString())
-    }
-
-    private fun cacheFile(trackId: String): File = File(cacheDir, sha256(trackId) + ".json")
-
-    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 }

@@ -35,11 +35,8 @@ fun Track.toMediaItem(): MediaItem {
     }
     val sourceUri = uri ?: remoteUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }?.let(Uri::parse)
         // 线上歌单可先完整入队；真正播放到该曲目时才由 ViewModel 替换为来源 API 返回的地址。
-        ?: if (source == Track.Source.NETEASE || source == Track.Source.QQ) {
-            Uri.Builder().scheme(PENDING_QUEUE_SCHEME).authority("pending").appendPath(id).build()
-        } else {
-            error("曲目没有可播放地址：$id")
-        }
+        // 本地/下载曲目缺地址时不抛异常，先入 pending 队列，播放到它会以“无可用地址”优雅失败。
+        ?: Uri.Builder().scheme(PENDING_QUEUE_SCHEME).authority("pending").appendPath(id).build()
     return MediaItem.Builder()
         .setMediaId(id)
         .setUri(sourceUri)

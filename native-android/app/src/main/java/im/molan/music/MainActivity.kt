@@ -1,6 +1,7 @@
 package im.molan.music
 
 import android.Manifest
+import android.app.Activity
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -32,10 +33,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -80,15 +82,15 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
     val playlistMessage by model.playlistMessage.collectAsStateWithLifecycle()
     val matchFlags by model.localMatchFlags.collectAsStateWithLifecycle()
-    var tab by remember { mutableStateOf(AppTab.HOME) }
-    var queueVisible by remember { mutableStateOf(false) }
-    var playerVisible by remember { mutableStateOf(false) }
-    var ncmLoginVisible by remember { mutableStateOf(false) }
-    var settingsVisible by remember { mutableStateOf(false) }
-    var donateVisible by remember { mutableStateOf(false) }
-    var ncmAccountVisible by remember { mutableStateOf(false) }
-    var playlistImportSource by remember { mutableStateOf<Track.Source?>(null) }
-    var localPlaylistCreateVisible by remember { mutableStateOf(false) }
+    var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
+    var queueVisible by rememberSaveable { mutableStateOf(false) }
+    var playerVisible by rememberSaveable { mutableStateOf(false) }
+    var ncmLoginVisible by rememberSaveable { mutableStateOf(false) }
+    var settingsVisible by rememberSaveable { mutableStateOf(false) }
+    var donateVisible by rememberSaveable { mutableStateOf(false) }
+    var ncmAccountVisible by rememberSaveable { mutableStateOf(false) }
+    var playlistImportSource by rememberSaveable { mutableStateOf<Track.Source?>(null) }
+    var localPlaylistCreateVisible by rememberSaveable { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
     val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) { model.scanLocalMusic(); model.refreshDownloads() }
@@ -103,11 +105,19 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         uri?.let(model::scanCustomFolder)
     }
 
-    BackHandler(enabled = playlistDetail != null || queueVisible || playerVisible || ncmLoginVisible || settingsVisible || donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible || tab != AppTab.HOME) {
+    val downloadFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(model::setDownloadFolder)
+    }
+
+    val overlayOpen = queueVisible || playerVisible || ncmLoginVisible || settingsVisible ||
+        donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible
+    val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
+    // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
+    BackHandler(enabled = !atRoot) {
         when {
-            playlistDetail != null -> model.closePlaylist()
-            queueVisible -> queueVisible = false
             playerVisible -> playerVisible = false
+            queueVisible -> queueVisible = false
+            playlistDetail != null -> model.closePlaylist()
             ncmLoginVisible -> { ncmLoginVisible = false; model.cancelNcmQrLogin() }
             settingsVisible -> settingsVisible = false
             donateVisible -> donateVisible = false
@@ -116,6 +126,10 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             localPlaylistCreateVisible -> localPlaylistCreateVisible = false
             else -> tab = AppTab.HOME
         }
+    }
+    // 根页返回：不直接退出应用，仅退回桌面（音乐仍在后台播放，再次打开秒回）。
+    BackHandler(enabled = atRoot) {
+        (LocalContext.current as? Activity)?.moveTaskToBack(true)
     }
 
     LaunchedEffect(Unit) { model.scanLocalMusic(); model.refreshDownloads() }
@@ -158,7 +172,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                         AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, matchFlags, model)
                         AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
                         AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
-                        AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, downloadMessage, model)
+                        AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, settings.downloadFolderUri, downloadMessage, model, onPickFolder = { downloadFolder.launch(null) }, onClearFolder = model::clearDownloadFolder)
                         AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                     }
                 }
@@ -174,7 +188,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         }
         if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
-        if (settingsVisible) SettingsDialog(settings, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false })
+        if (settingsVisible) SettingsDialog(settings, cacheSpaceBytes = model.onlineCacheSpace, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false }, onClearCache = model::clearOnlineCache)
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
         if (ncmAccountVisible) NcmAccountDialog(settings, onDismiss = { ncmAccountVisible = false }, onLogout = { model.logoutNcm(); ncmAccountVisible = false })
         if (localPlaylistCreateVisible) CreateLocalPlaylistDialog(onDismiss = { localPlaylistCreateVisible = false }, onCreate = { name -> model.createLocalPlaylist(name); localPlaylistCreateVisible = false })

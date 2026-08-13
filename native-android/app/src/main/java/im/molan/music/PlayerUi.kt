@@ -1,6 +1,8 @@
 package im.molan.music
 
 import android.graphics.BitmapFactory
+import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -62,6 +65,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +83,9 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import im.molan.music.model.AppSettings
+import java.io.File
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.LyricLine
 import im.molan.music.model.NcmQrLoginState
@@ -370,10 +376,36 @@ internal fun CoverBackdrop(track: Track) {
 
 @Composable
 internal fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape) {
+    CachedCoverImage(
+        url = track.artworkUri?.toString() ?: track.uri?.toString(),
+        contentDescription = "${track.title} 封面",
+        modifier = modifier,
+        shape = shape,
+    )
+}
+
+/**
+ * 网络封面本地化：优先查 Room 里的本地路径引用加载磁盘封面；
+ * 从网络首次加载成功后把封面落盘并入库，后续离线也走本地文件。
+ */
+@Composable
+internal fun CachedCoverImage(url: String?, contentDescription: String, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape, placeholder: @Composable (() -> Unit)? = null) {
     val context = LocalContext.current
-    val source = track.artworkUri ?: track.uri
+    val app = context.applicationContext as QingyinApplication
+    val scope = rememberCoroutineScope()
+    val isRemote = url?.startsWith("http") == true
+    var localFile by remember(url) { mutableStateOf<File?>(null) }
+    LaunchedEffect(url) {
+        if (isRemote) localFile = runCatching { app.artworkStore.localPathFor(url.orEmpty()) }.getOrNull()
+    }
+    val source = when {
+        isRemote && localFile != null -> localFile
+        url != null -> Uri.parse(url)
+        else -> null
+    }
     if (source == null) {
-        Box(modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+        if (placeholder != null) placeholder()
+        else Box(modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.primary)
         }
     } else {
@@ -384,8 +416,21 @@ internal fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(true)
+                .listener(onSuccess = { _, result ->
+                    if (isRemote && url != null && localFile == null) {
+                        val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+                        if (bitmap != null) scope.launch {
+                            val file = app.artworkStore.fileFor(url)
+                            runCatching {
+                                java.io.FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                            }.onSuccess {
+                                runCatching { app.artworkStore.remember(url, file) }
+                            }
+                        }
+                    }
+                })
                 .build(),
-            contentDescription = "${track.title} 封面",
+            contentDescription = contentDescription,
             modifier = modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer),
         )
     }
@@ -503,14 +548,17 @@ internal fun DonateDialog(onDismiss: () -> Unit) {
 }
 
 @Composable
-internal fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave: (AppSettings) -> Unit) {
+internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, onDismiss: () -> Unit, onSave: (AppSettings) -> Unit, onClearCache: () -> Unit = {}) {
     var primaryNcm by remember(settings) { mutableStateOf(settings.ncmcBaseUrl) }
     var backupNcm by remember(settings) { mutableStateOf(settings.backupNcmcBaseUrl) }
     var useBackupNcm by remember(settings) { mutableStateOf(settings.useBackupNcmc) }
     var chkszBase by remember(settings) { mutableStateOf(settings.chkszBaseUrl) }
     var apiKey by remember(settings) { mutableStateOf(settings.chkszApiKey) }
+    var streamQuality by remember(settings) { mutableStateOf(settings.streamQuality) }
     var quality by remember(settings) { mutableStateOf(settings.quality) }
+    var streamQqQuality by remember(settings) { mutableStateOf(settings.streamQqQuality) }
     var qqQuality by remember(settings) { mutableStateOf(settings.qqQuality) }
+    var cacheLimitMb by remember(settings) { mutableStateOf((settings.cacheLimitBytes / (1024L * 1024L)).toString()) }
     var darkTheme by remember(settings) { mutableStateOf(settings.darkTheme) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -518,29 +566,36 @@ internal fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave
         text = {
             LazyColumn(Modifier.height(440.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { SettingRow("深色模式", "跟随你的界面偏好", Icons.Default.DarkMode, darkTheme) { darkTheme = !darkTheme } }
-                item { Text("播放与下载", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
-                item { Text("网易云音质", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
-                items(AppSettings.Quality.entries) { option ->
-                    Card(
-                        Modifier.fillMaxWidth().clickable { quality = option },
-                        colors = CardDefaults.cardColors(containerColor = if (quality == option) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
-                    ) {
-                        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(option.label, Modifier.weight(1f))
-                            if (quality == option) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                item { Text("线上试听与下载", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+                item {
+                    Text(
+                        "试听/在线播放使用“试听音质”并进入临时缓存；下载使用“下载音质”永久保存。两者完全独立。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                item { Text("QQ 音质", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
-                items(AppSettings.QqQuality.entries) { option ->
-                    Card(
-                        Modifier.fillMaxWidth().clickable { qqQuality = option },
-                        colors = CardDefaults.cardColors(containerColor = if (qqQuality == option) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
-                    ) {
-                        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(option.label, Modifier.weight(1f))
-                            if (qqQuality == option) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
+                QualitySelector("网易云 · 试听音质", AppSettings.Quality.entries, streamQuality) { streamQuality = it }
+                QualitySelector("网易云 · 下载音质", AppSettings.Quality.entries, quality) { quality = it }
+                QualitySelector("QQ · 试听音质", AppSettings.QqQuality.entries, streamQqQuality) { streamQqQuality = it }
+                QualitySelector("QQ · 下载音质", AppSettings.QqQuality.entries, qqQuality) { qqQuality = it }
+                item { Text("在线试听缓存", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+                item {
+                    Text(
+                        "已用 ${formatBytes(cacheSpaceBytes)} / 上限 ${formatBytes((cacheLimitMb.toLongOrNull() ?: 0L) * 1024L * 1024L)}。缓存歌曲与下载歌曲互不影响，清空缓存不影响已下载音乐。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextField(
+                            cacheLimitMb, { value -> if (value.length <= 6 && value.all { it.isDigit() }) cacheLimitMb = value },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("缓存上限（MB）") },
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalButton(onClick = onClearCache, modifier = Modifier.height(48.dp)) { Text("清空缓存") }
                     }
                 }
                 item { Text("网易云私有服务", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
@@ -549,16 +604,19 @@ internal fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave
                 item { SettingRow("使用备用 NCMC", "主线路异常时可手动切换", Icons.Default.Refresh, useBackupNcm) { useBackupNcm = !useBackupNcm } }
                 item { Text("QQ / ChKSz API", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
-                item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（QQ 搜索必填）") }, singleLine = true) }
-                item { Text("QQ 搜索和受限网易云曲目将优先使用官方 ChKSz 主线路；旧备用域名已停用以避免 404。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（必填）") }, singleLine = true) }
+                item { Text("QQ 搜索与网易云兜底均只走你配置的 ChKSz 主线路，必须填写 API Key；不再内置官方 top 域名备选。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = {
             FilledTonalButton(onClick = {
                 onSave(settings.copy(
                     darkTheme = darkTheme,
+                    streamQuality = streamQuality,
                     quality = quality,
+                    streamQqQuality = streamQqQuality,
                     qqQuality = qqQuality,
+                    cacheLimitBytes = (cacheLimitMb.toLongOrNull() ?: 0L).coerceAtLeast(64L) * 1024L * 1024L,
                     ncmcBaseUrl = primaryNcm,
                     backupNcmcBaseUrl = backupNcm,
                     useBackupNcmc = useBackupNcm,
@@ -570,6 +628,21 @@ internal fun SettingsDialog(settings: AppSettings, onDismiss: () -> Unit, onSave
         },
         dismissButton = { FilledTonalButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+private fun LazyListScope.QualitySelector(title: String, entries: List<Any>, selected: Any, onSelect: (Any) -> Unit) {
+    item { Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+    items(entries) { option ->
+        Card(
+            Modifier.fillMaxWidth().clickable { onSelect(option) },
+            colors = CardDefaults.cardColors(containerColor = if (selected == option) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text((option as? AppSettings.Quality)?.label ?: (option as? AppSettings.QqQuality)?.label ?: option.toString(), Modifier.weight(1f))
+                if (selected == option) Text("已选", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
 }
 
 @Composable

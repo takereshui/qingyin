@@ -78,19 +78,23 @@ class PlaybackService : MediaSessionService() {
             if (bitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)) {
                 val data = stream.toByteArray()
                 withContext(Dispatchers.Main) {
-                    val player = session.player
-                    // 遍历寻找队列中匹配的项并更新其元数据（注入位图数据）
-                    for (i in 0 until player.mediaItemCount) {
-                        val currentItem = player.getMediaItemAt(i)
-                        if (currentItem.mediaId == item.mediaId) {
-                            val newMetadata = currentItem.mediaMetadata.buildUpon()
-                                .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                .build()
-                            val newItem = currentItem.buildUpon()
-                                .setMediaMetadata(newMetadata)
-                                .build()
-                            // 仅当该项仍在队列中时进行原位替换
-                            player.replaceMediaItem(i, newItem)
+                    // 服务可能已被销毁（onDestroy 已 release player），此时再遍历会抛 IllegalStateException。
+                    if (session.isReleased) return@withContext
+                    runCatching {
+                        val player = session.player
+                        // 遍历寻找队列中匹配的项并更新其元数据（注入位图数据）
+                        for (i in 0 until player.mediaItemCount) {
+                            val currentItem = player.getMediaItemAt(i)
+                            if (currentItem.mediaId == item.mediaId) {
+                                val newMetadata = currentItem.mediaMetadata.buildUpon()
+                                    .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                                    .build()
+                                val newItem = currentItem.buildUpon()
+                                    .setMediaMetadata(newMetadata)
+                                    .build()
+                                // 仅当该项仍在队列中时进行原位替换
+                                player.replaceMediaItem(i, newItem)
+                            }
                         }
                     }
                 }
@@ -123,7 +127,11 @@ class PlaybackService : MediaSessionService() {
             .setDefaultRequestProperties(
                 mapOf("Referer" to "https://music.163.com/")
             )
-        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+        // 在线曲目边播边写进 SimpleCache（LRU 上限可调）；本地曲目直读不入缓存。
+        val dataSourceFactory = MediaDataSourceFactory(
+            (application as im.molan.music.QingyinApplication).onlineCache,
+            DefaultDataSource.Factory(this, httpFactory),
+        )
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dataSourceFactory))
             .setAudioAttributes(

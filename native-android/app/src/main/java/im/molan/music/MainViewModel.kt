@@ -50,7 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val dailyRepository = DailyRepository(application, ncmRepository)
     private val playlistRepository = PlaylistRepository(application, ncmRepository)
     private val qqRepository = QqRepository()
-    private val lyricsRepository = LyricsRepository(application, ncmRepository)
+    private val lyricsRepository = LyricsRepository(ncmRepository, (application as QingyinApplication).database.lyricDao())
     private val settingsRepository = SettingsRepository(application)
     val playback = PlaybackConnection(application)
 
@@ -136,6 +136,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _downloadedTracks.value = tracks
                     rebuildLocalMatchIndex()
                     refreshShownMatchFlags()
+                    // 新下载已发布进系统媒体库：任务结构变化（含完成）后自动重扫本地，新歌立即出现在本地页。
+                    if (tracks.isNotEmpty() && localRepository.canReadMedia()) scanLocalMusic()
                 }
                 _downloadMessage.value = when {
                     entries.any { it.status == DownloadEntry.Status.DOWNLOADING } -> "轻音内置下载器正在下载 ${entries.count { it.status == DownloadEntry.Status.DOWNLOADING }} 个任务"
@@ -225,6 +227,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun restoreCustomFolder(uri: String) {
         if (uri.isNotBlank()) restoreCustomFolders(listOf(uri))
     }
+
+    /** 设置 SAF 下载目录；空 treeUri 视为恢复默认公共 Music/轻音下载。 */
+    fun setDownloadFolder(uri: Uri?) {
+        if (uri != null) {
+            runCatching {
+                getApplication<Application>().contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+        }
+        updateSettings { it.copy(downloadFolderUri = uri?.toString().orEmpty()) }
+    }
+
+    fun clearDownloadFolder() = updateSettings { it.copy(downloadFolderUri = "") }
 
     fun playLocal(track: Track) {
         val tracks = _localTracks.value
@@ -827,26 +844,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun enqueueDownload(track: Track) {
         viewModelScope.launch {
-            val requestedQuality = if (track.source == Track.Source.QQ) settings.value.qqQuality.label else settings.value.quality.label
-            _networkMessage.value = "正在按 $requestedQuality 解析下载音源…"
+            val isNcm = track.source == Track.Source.NETEASE
+            val requestedLabel = if (isNcm) settings.value.quality.label else settings.value.qqQuality.label
+            val requestedWire = if (isNcm) settings.value.quality.wireValue else settings.value.qqQuality.wireValue
+            _networkMessage.value = "正在按 $requestedLabel 解析下载音源…"
             _downloadMessage.value = "正在创建《${track.title}》下载任务…"
             _downloadActionMessage.value = "正在解析下载音源…"
             runCatching {
                 withTimeout(25_000L) { resolveDownloadTrack(track) }
-            }.mapCatching(::enqueueResolvedDownload)
-                .onSuccess { result ->
-                    val text = if (result.added) "已加入下载：${track.title} · $requestedQuality" else "下载任务已存在：${track.title}"
-                    _networkMessage.value = text
-                    _downloadMessage.value = text
-                    _downloadActionMessage.value = text
-                    refreshDownloads()
+            }.onSuccess { resolved ->
+                val onlineCache = (application as QingyinApplication).onlineCache
+                val url = resolved.remoteUrl
+                val cacheHit = url != null && onlineCache.isFullyCached(url)
+                val enqueueResult = if (cacheHit) {
+                    runCatching { enqueueResolvedFromCache(resolved, url!!) }
+                } else {
+                    runCatching { enqueueResolvedDownload(resolved) }
                 }
-                .onFailure { error ->
-                    val text = "下载解析失败：${error.message ?: "无法获取所选音质的下载地址"}"
-                    _networkMessage.value = text
-                    _downloadMessage.value = text
-                    _downloadActionMessage.value = text
+                val text = if (enqueueResult.isSuccess) {
+                    val enqueue = enqueueResult.getOrThrow()
+                    val actualLabel = resolved.resolvedQuality?.label ?: resolved.resolvedQqQuality?.label
+                    val actualWire = resolved.resolvedQuality?.wireValue ?: resolved.resolvedQqQuality?.wireValue
+                    buildString {
+                        append(if (enqueue.added) "已加入下载：${track.title} · ${actualLabel ?: requestedLabel}" else "下载任务已存在：${track.title}")
+                        if (cacheHit) append("（试听缓存已命中，直接另存，无需重新下载）")
+                        if (actualWire != null && actualWire != requestedWire) append("（所选音质不可用，已按 $actualLabel 降级）")
+                    }
+                } else {
+                    "下载任务创建失败：${enqueueResult.exceptionOrNull()?.message ?: "未知错误"}"
                 }
+                _networkMessage.value = text
+                _downloadMessage.value = text
+                _downloadActionMessage.value = text
+                refreshDownloads()
+            }.onFailure { error ->
+                val text = "下载解析失败：${error.message ?: "无法获取所选音质的下载地址"}"
+                _networkMessage.value = text
+                _downloadMessage.value = text
+                _downloadActionMessage.value = text
+            }
         }
     }
 
@@ -857,6 +893,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun enqueueResolvedDownload(downloadable: Track): DownloadRepository.EnqueueResult {
+        val (fileName, qualityLabel, referer) = downloadFileSpec(downloadable)
+        return downloadRepository.enqueueIfAbsent(
+            requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
+            downloadable.title,
+            "${downloadable.artist} · $qualityLabel",
+            fileName,
+            referer,
+        )
+    }
+
+    /** 试听缓存已完整命中：直接从缓存字节写入下载目录，不经网络。 */
+    private fun enqueueResolvedFromCache(downloadable: Track, url: String): DownloadRepository.EnqueueResult {
+        val (fileName, qualityLabel, referer) = downloadFileSpec(downloadable)
+        val app = application as QingyinApplication
+        return downloadRepository.enqueueFromCached(
+            url,
+            downloadable.title,
+            "${downloadable.artist} · $qualityLabel",
+            fileName,
+            referer,
+        ) { app.onlineCache.openCachedStream(url) }
+    }
+
+    private fun downloadFileSpec(downloadable: Track): Triple<String, String, String?> {
         val extension = downloadable.audioExtension
             ?.lowercase()
             ?.replace(Regex("[^a-z0-9]"), "")
@@ -869,17 +929,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Track.Source.QQ -> "https://y.qq.com/"
             else -> null
         }
-        return downloadRepository.enqueueIfAbsent(
-            requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
-            downloadable.title,
-            "${downloadable.artist} · $qualityLabel",
-            fileName,
-            referer,
-        )
+        return Triple(fileName, qualityLabel, referer)
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
-        viewModelScope.launch { settingsRepository.update(transform) }
+        val current = settings.value
+        val next = transform(current)
+        if (next.cacheLimitBytes != current.cacheLimitBytes) {
+            (application as QingyinApplication).onlineCache.reconfigure(next.cacheLimitBytes)
+        }
+        viewModelScope.launch { settingsRepository.update { transform(it) } }
+    }
+
+    /** 在线试听缓存占用字节数（仅当前会话实例；未初始化前为 0）。 */
+    val onlineCacheSpace: Long
+        get() = (application as QingyinApplication).onlineCache.spaceBytes
+
+    /** 一键清空在线试听缓存（不影响已下载音乐）。 */
+    fun clearOnlineCache() {
+        (application as QingyinApplication).onlineCache.clearAll()
     }
 
     override fun onCleared() {

@@ -58,6 +58,7 @@ class QqRepository(
     suspend fun resolve(settings: AppSettings, track: Track, isDownload: Boolean = false): ResolvedQqTrack = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.QQ) { "该曲目不是 QQ 音源" }
 
+        val target = if (isDownload) settings.qqQuality else settings.streamQqQuality
         // CDN 约 20min 过期，保守 15min 复用上限
         val now = System.currentTimeMillis()
         val ageMs = now - track.resolvedAt
@@ -66,8 +67,8 @@ class QqRepository(
         val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
 
         if (hasValidUrl && !isExpired) {
-            // 下载时必须音质一致；播放只要有地址就用。
-            if (!isDownload || track.resolvedQqQuality == settings.qqQuality) {
+            // 播放与下载一致：只有缓存音质与当前目标音质一致（或未知音质）才复用。
+            if (track.resolvedQqQuality == null || track.resolvedQqQuality == target) {
                 return@withContext ResolvedQqTrack(track, "") // 复用时不需要重新返回歌词
             }
         }
@@ -75,14 +76,11 @@ class QqRepository(
         val mid = track.qqMid.orEmpty().ifBlank { track.id.removePrefix("qq:") }
         require(mid.isNotBlank()) { "QQ 曲目缺少 MID" }
 
-        // 下载优先目标音质；失败则按 母带→Hi-Res→FLAC→320→128 降级，避免“下载不可用”。
-        val sizes = if (isDownload) {
-            val descending = listOf("master", "hires", "flac", "320k", "128k")
-            listOf(settings.qqQuality.wireValue) + descending.filterNot { it == settings.qqQuality.wireValue }
-        } else {
-            listOf(settings.qqQuality.wireValue)
-        }
-        var lastFailure = "QQ 未提供 ${settings.qqQuality.label} 音源"
+        // 播放与下载一致：先请求目标音质；失败则按 母带→Hi-Res→FLAC→320→128 降级，
+        // 避免“所选音质不可用”时在线播放直接失败。
+        val sizes = listOf(target.wireValue) +
+            listOf("master", "hires", "flac", "320k", "128k").filterNot { it == target.wireValue }
+        var lastFailure = "QQ 未提供 ${target.label} 音源"
         for (size in sizes) {
             val payload = runCatching {
                 requestChksz(settings, mapOf("mid" to mid, "size" to size, "type" to "json"))
@@ -213,37 +211,20 @@ class QqRepository(
 
     private fun requestChksz(settings: AppSettings, parameters: Map<String, String>): JSONObject {
         require(settings.chkszApiKey.isNotBlank()) { "请先在设置中填写 ChKSz API Key 后使用 QQ 音乐" }
-        val candidates = listOf(settings.chkszBaseUrl, OFFICIAL_API_BASE)
-            .map(::normalizeApiBase)
-            .distinct()
-        var lastFailure = "QQ API 不可用"
-        for (base in candidates) {
-            val url = base.newBuilder().addPathSegments("api/qq_music").apply {
-                parameters.forEach { (key, value) -> addQueryParameter(key, value) }
-                addQueryParameter("apikey", settings.chkszApiKey)
-            }.build()
-            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                val raw = response.body?.string().orEmpty()
-                if (response.code == 404) {
-                    lastFailure = "QQ API 路由不存在：${base.host}"
-                    return@use
-                }
-                if (!response.isSuccessful) {
-                    lastFailure = "QQ API 请求失败：HTTP ${response.code}"
-                    return@use
-                }
-                val payload = runCatching { JSONObject(raw) }.getOrElse {
-                    lastFailure = "QQ API 返回了无法识别的数据"
-                    return@use
-                }
-                if (payload.optInt("code", 200) != 200) {
-                    lastFailure = payload.optString("msg").ifBlank { "QQ API 返回错误" }
-                    return@use
-                }
-                return payload
-            }
+        if (settings.chkszBaseUrl.isBlank()) error("ChKSz 主线路地址为空，请在设置中填写")
+        // 只走用户配置的私有主线路（必须用 Key）；不再内置官方 top 域名备选。
+        val url = normalizeApiBase(settings.chkszBaseUrl).newBuilder().addPathSegments("api/qq_music").apply {
+            parameters.forEach { (key, value) -> addQueryParameter(key, value) }
+            addQueryParameter("apikey", settings.chkszApiKey)
+        }.build()
+        client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            if (response.code == 404) error("QQ API 路由不存在：${response.request.url.host}")
+            if (!response.isSuccessful) error("QQ API 请求失败：HTTP ${response.code}")
+            val payload = runCatching { JSONObject(raw) }.getOrElse { error("QQ API 返回了无法识别的数据") }
+            if (payload.optInt("code", 200) != 200) error(payload.optString("msg").ifBlank { "QQ API 返回错误" })
+            return payload
         }
-        error(lastFailure)
     }
 
     /** 兼容用户把主地址误填成 https://api.chksz.com/api 的旧配置。 */
@@ -265,7 +246,6 @@ class QqRepository(
     }
 
     private companion object {
-        const val OFFICIAL_API_BASE = "https://api.chksz.com"
         /** CDN 约 20min 过期，保守 15min 复用上限 */
         const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
     }

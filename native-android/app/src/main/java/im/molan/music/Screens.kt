@@ -53,10 +53,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import coil.request.CachePolicy
-import coil.request.ImageRequest
-import androidx.compose.ui.platform.LocalContext
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.PlaylistDetail
@@ -187,7 +183,7 @@ internal fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message:
 }
 
 @Composable
-internal fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, message: String, model: MainViewModel) {
+internal fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, downloadFolderUri: String, message: String, model: MainViewModel, onPickFolder: () -> Unit, onClearFolder: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -198,13 +194,33 @@ internal fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, 
                 IconButton(onClick = model::refreshDownloads, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.Refresh, "刷新下载列表") }
             }
         }
+        item {
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("下载目录", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (downloadFolderUri.isBlank()) "默认：系统 Music/轻音下载（对系统媒体库和外部播放器可见）" else "自定义目录：${downloadFolderUri.substringAfterLast('/').ifBlank { downloadFolderUri }}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(onClick = onPickFolder, modifier = Modifier.height(36.dp)) { Text("选择目录") }
+                        if (downloadFolderUri.isNotBlank()) {
+                            TextButton(onClick = onClearFolder) { Text("恢复默认") }
+                        }
+                    }
+                }
+            }
+        }
         item { Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (entries.isNotEmpty()) {
             item { Text("内置下载任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
             items(entries, key = DownloadEntry::id) { entry -> DownloadTaskRow(entry, onRetry = { model.retryDownload(entry.id) }) }
         }
         item { Text("已下载音乐", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
-        if (tracks.isEmpty()) item { EmptyHint("尚未发现已完成的音乐。下载由轻音内置队列直接写入应用下载目录。") }
+        if (tracks.isEmpty()) item { EmptyHint("尚未发现已完成的音乐。下载完成后会写入 Music/轻音下载 并自动进入本地扫描。") }
         else items(tracks, key = Track::id) { track -> TrackRow(track, onClick = { model.playDownloaded(track) }) }
     }
 }
@@ -349,16 +365,12 @@ internal fun PlaylistCard(playlist: PlaylistSummary, modifier: Modifier, onClick
 
 @Composable
 internal fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
-    val context = LocalContext.current
-    if (playlist.coverUri == null) {
-        Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Default.LibraryMusic, null, tint = MaterialTheme.colorScheme.primary) }
-    } else {
-        AsyncImage(
-            model = ImageRequest.Builder(context).data(playlist.coverUri).size(360).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(true).build(),
-            contentDescription = "${playlist.name} 封面",
-            modifier = modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer),
-        )
-    }
+    CachedCoverImage(
+        url = playlist.coverUri?.toString(),
+        contentDescription = "${playlist.name} 封面",
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+    )
 }
 
 @Composable

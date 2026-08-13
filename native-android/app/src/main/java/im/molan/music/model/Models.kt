@@ -84,10 +84,16 @@ data class PlayerSnapshot(
 
 data class AppSettings(
     val darkTheme: Boolean = false,
-    /** 网易云质量：保留旧 quality 字段以兼容既有 DataStore 配置。 */
-    val quality: Quality = Quality.EXHIGH,
-    /** QQ 音乐质量：使用 ChKSz QQ 接口的原生 size 参数，绝不混用网易云 level。 */
+    /** 网易云在线试听/缓存音质（线上辅助，省流量）。 */
+    val streamQuality: Quality = Quality.EXHIGH,
+    /** 网易云下载音质：保留旧 quality 字段以兼容既有 DataStore 配置。 */
+    val quality: Quality = Quality.LOSSLESS,
+    /** QQ 音乐在线试听音质。 */
+    val streamQqQuality: QqQuality = QqQuality.K320,
+    /** QQ 音乐下载音质：使用 ChKSz QQ 接口的原生 size 参数，绝不混用网易云 level。 */
     val qqQuality: QqQuality = QqQuality.FLAC,
+    /** 在线试听缓存容量上限（字节），默认 2GB；缓存与下载完全分离。 */
+    val cacheLimitBytes: Long = 2L * 1024 * 1024 * 1024,
     val ncmcBaseUrl: String = "https://music.mcseekeri.com",
     val backupNcmcBaseUrl: String = "",
     val useBackupNcmc: Boolean = false,
@@ -98,6 +104,8 @@ data class AppSettings(
     val customFolderUri: String = "",
     /** 用户选择的多个本地音乐根目录，按选择顺序持久化。 */
     val customFolderUris: List<String> = emptyList(),
+    /** 用户通过 SAF 选择的下载目录 treeUri；为空时使用默认公共 Music/轻音下载。 */
+    val downloadFolderUri: String = "",
     val ncmCookie: String = "",
     val ncmNickname: String = "",
     val ncmUserId: Long = 0L,

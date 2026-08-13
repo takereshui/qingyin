@@ -18,6 +18,9 @@ class SettingsRepository(private val context: Context) {
         val darkTheme = booleanPreferencesKey("dark_theme")
         val quality = stringPreferencesKey("quality")
         val qqQuality = stringPreferencesKey("qq_quality")
+        val streamQuality = stringPreferencesKey("stream_quality")
+        val streamQqQuality = stringPreferencesKey("stream_qq_quality")
+        val cacheLimitBytes = longPreferencesKey("cache_limit_bytes")
         val importedPlaylists = stringPreferencesKey("imported_playlists")
         val ncmcBaseUrl = stringPreferencesKey("ncmc_base_url")
         val backupNcmcBaseUrl = stringPreferencesKey("backup_ncmc_base_url")
@@ -27,6 +30,7 @@ class SettingsRepository(private val context: Context) {
         val chkszApiKey = stringPreferencesKey("chksz_api_key")
         val customFolderUri = stringPreferencesKey("custom_folder_uri")
         val customFolderUris = stringPreferencesKey("custom_folder_uris")
+        val downloadFolderUri = stringPreferencesKey("download_folder_uri")
         val ncmCookie = stringPreferencesKey("ncm_cookie")
         val ncmNickname = stringPreferencesKey("ncm_nickname")
         val ncmUserId = longPreferencesKey("ncm_user_id")
@@ -35,10 +39,16 @@ class SettingsRepository(private val context: Context) {
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { preferences ->
         AppSettings(
             darkTheme = preferences[Keys.darkTheme] ?: false,
-            quality = AppSettings.Quality.entries.firstOrNull { it.wireValue == preferences[Keys.quality] }
+            streamQuality = AppSettings.Quality.entries.firstOrNull { it.wireValue == preferences[Keys.streamQuality] }
                 ?: AppSettings.Quality.EXHIGH,
+            quality = AppSettings.Quality.entries.firstOrNull { it.wireValue == preferences[Keys.quality] }
+                ?: AppSettings.Quality.LOSSLESS,
+            streamQqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == preferences[Keys.streamQqQuality] }
+                ?: AppSettings.QqQuality.K320,
             qqQuality = AppSettings.QqQuality.entries.firstOrNull { it.wireValue == preferences[Keys.qqQuality] }
                 ?: AppSettings.QqQuality.FLAC,
+            cacheLimitBytes = (preferences[Keys.cacheLimitBytes] ?: 0L).takeIf { it > 0L }
+                ?: (2L * 1024L * 1024L * 1024L),
             ncmcBaseUrl = preferences[Keys.ncmcBaseUrl] ?: "https://music.mcseekeri.com",
             backupNcmcBaseUrl = preferences[Keys.backupNcmcBaseUrl] ?: "",
             useBackupNcmc = preferences[Keys.useBackupNcmc] ?: false,
@@ -47,6 +57,7 @@ class SettingsRepository(private val context: Context) {
             chkszApiKey = preferences[Keys.chkszApiKey] ?: "",
             customFolderUri = preferences[Keys.customFolderUri] ?: "",
             customFolderUris = (preferences[Keys.customFolderUris].orEmpty().split('|').filter(String::isNotBlank) + (preferences[Keys.customFolderUri] ?: "")).distinct(),
+            downloadFolderUri = preferences[Keys.downloadFolderUri] ?: "",
             ncmCookie = preferences[Keys.ncmCookie] ?: "",
             ncmNickname = preferences[Keys.ncmNickname] ?: "",
             ncmUserId = preferences[Keys.ncmUserId] ?: 0L,
@@ -59,8 +70,11 @@ class SettingsRepository(private val context: Context) {
         val next = transform(current)
         context.settingsDataStore.edit { preferences ->
             preferences[Keys.darkTheme] = next.darkTheme
+            preferences[Keys.streamQuality] = next.streamQuality.wireValue
             preferences[Keys.quality] = next.quality.wireValue
+            preferences[Keys.streamQqQuality] = next.streamQqQuality.wireValue
             preferences[Keys.qqQuality] = next.qqQuality.wireValue
+            preferences[Keys.cacheLimitBytes] = next.cacheLimitBytes.coerceAtLeast(64L * 1024 * 1024)
             preferences[Keys.ncmcBaseUrl] = next.ncmcBaseUrl.trimEnd('/')
             preferences[Keys.backupNcmcBaseUrl] = next.backupNcmcBaseUrl.trimEnd('/')
             preferences[Keys.useBackupNcmc] = next.useBackupNcmc
@@ -69,6 +83,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.chkszApiKey] = next.chkszApiKey.trim()
             preferences[Keys.customFolderUri] = next.customFolderUri
             preferences[Keys.customFolderUris] = next.customFolderUris.filter(String::isNotBlank).distinct().joinToString("|")
+            preferences[Keys.downloadFolderUri] = next.downloadFolderUri.trim()
             preferences[Keys.ncmCookie] = next.ncmCookie
             preferences[Keys.ncmNickname] = next.ncmNickname
             preferences[Keys.ncmUserId] = next.ncmUserId

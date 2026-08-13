@@ -40,7 +40,13 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startForegroundCompat() {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // Android 12+ 后台受限或通知被拒等场景可能抛 ForegroundServiceStartNotAllowedException；
+        // 捕获后停止自身，避免 onCreate 抛异常导致整个进程闪退，下载队列仍由仓库在后台推进。
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        } catch (_: Exception) {
+            stopSelf()
+        }
     }
 
     private fun buildNotification(): Notification {

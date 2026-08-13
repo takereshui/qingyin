@@ -18,7 +18,6 @@ data class NcmQrCheck(val code: Int, val cookie: String)
 
 data class NcmAccount(val nickname: String, val userId: Long)
 
-private const val OFFICIAL_CHKSZ_BASE = "https://api.chksz.com"
 /** CDN 约 20min 过期，保守 15min 复用上限 */
 private const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
 
@@ -48,7 +47,7 @@ class NcmRepository(
     suspend fun account(settings: AppSettings): NcmAccount? = withContext(Dispatchers.IO) {
         val payload = request(settings, "/user/account", emptyMap())
         val profile = payload.optJSONObject("profile") ?: payload.optJSONObject("data")?.optJSONObject("profile") ?: return@withContext null
-        NcmAccount(profile.optString("nickname"), profile.optLong("userId", profile.optLong("userId")))
+        NcmAccount(profile.optString("nickname"), profile.optLong("userId", 0L))
     }
 
     suspend fun userPlaylists(settings: AppSettings, userId: Long, limit: Int = 60): List<PlaylistSummary> = withContext(Dispatchers.IO) {
@@ -80,11 +79,13 @@ class NcmRepository(
 
     /**
      * 统一解析入口：合并播放与下载路径。
-     * @param isDownload 为 true 时，复用要求音质一致；降级后的真实音质写回 resolvedQuality。
+     * @param isDownload 为 true 时按下载音质解析并强制音质一致；否则按试听音质（线上辅助，省流量）。
+     * 降级后的真实音质写回 resolvedQuality。
      */
     suspend fun resolveRemote(settings: AppSettings, track: Track, isDownload: Boolean = false): Track = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
 
+        val target = if (isDownload) settings.quality else settings.streamQuality
         val now = System.currentTimeMillis()
         val ageMs = now - track.resolvedAt
         val isExpired = ageMs > REMOTE_URL_TTL_MS
@@ -92,7 +93,8 @@ class NcmRepository(
         val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
 
         if (hasValidUrl && !isExpired) {
-            if (!isDownload || track.resolvedQuality == settings.quality) return@withContext track
+            // 无论播放还是下载：只有缓存音质与当前目标音质一致（或未知音质）才复用。
+            if (track.resolvedQuality == null || track.resolvedQuality == target) return@withContext track
         }
 
         val id = track.id.removePrefix("ncm:")
@@ -100,7 +102,7 @@ class NcmRepository(
         val hasChksz = settings.chkszApiKey.isNotBlank()
 
         if (!hasCookie) {
-            chkszFallbackUrl(settings, id)?.let { fallbackUrl ->
+            chkszFallbackUrl(settings, id, target)?.let { fallbackUrl ->
                 return@withContext track.copy(
                     remoteUrl = fallbackUrl,
                     resolvedQuality = null,
@@ -122,7 +124,7 @@ class NcmRepository(
             AppSettings.Quality.HIGH,
             AppSettings.Quality.STANDARD,
         )
-        val levels = qualityOrder.dropWhile { it != settings.quality }
+        val levels = qualityOrder.dropWhile { it != target }
 
         var lastError = "网易云未返回可用播放地址（cookie 可能过期或无该音质权益）"
         for (requested in levels) {
@@ -147,7 +149,7 @@ class NcmRepository(
             )
         }
 
-        chkszFallbackUrl(settings, id)?.let { fallbackUrl ->
+        chkszFallbackUrl(settings, id, target)?.let { fallbackUrl ->
             return@withContext track.copy(
                 remoteUrl = fallbackUrl,
                 resolvedQuality = null,
@@ -159,11 +161,11 @@ class NcmRepository(
         error(
             when {
                 isDownload && !hasChksz ->
-                    "网易云未提供“${settings.quality.label}”下载地址；可调低音质、检查登录，或配置 ChKSz 兜底"
+                    "网易云未提供“${target.label}”下载地址；可调低音质、检查登录，或配置 ChKSz 兜底"
                 !hasChksz ->
                     "$lastError；未配置 ChKSz 兜底"
                 else ->
-                    if (isDownload) "网易云与 ChKSz 均未提供“${settings.quality.label}”可用地址"
+                    if (isDownload) "网易云与 ChKSz 均未提供“${target.label}”可用地址"
                     else "$lastError；ChKSz 兜底也失败"
             },
         )
@@ -185,37 +187,34 @@ class NcmRepository(
         lrc.orEmpty() to translated.orEmpty()
     }
 
-    private fun chkszFallbackUrl(settings: AppSettings, id: String): String? {
+    /** ChKSz 兜底：仅使用用户配置的私有主线路，必须携带 API Key；不再内置官方 top 域名备选。 */
+    private fun chkszFallbackUrl(settings: AppSettings, id: String, target: AppSettings.Quality): String? {
         if (settings.chkszApiKey.isBlank()) return null
-        val bases = listOf(settings.chkszBaseUrl, OFFICIAL_CHKSZ_BASE)
-            .map { it.trim().ifBlank { OFFICIAL_CHKSZ_BASE }.trimEnd('/').removeSuffix("/api").toHttpUrl() }
-            .distinct()
+        val base = settings.chkszBaseUrl.trim().ifBlank { return null }.trimEnd('/').removeSuffix("/api").toHttpUrl()
         // ChKSz 不认 higher，映射为 exhigh；自目标起降级
-        val targetLevel = settings.quality.wireValue.let { if (it == "higher") "exhigh" else it }
+        val targetLevel = target.wireValue.let { if (it == "higher") "exhigh" else it }
         val levelOrder = listOf("jymaster", "hires", "lossless", "exhigh", "standard")
         val levels = (listOf(targetLevel) + levelOrder.dropWhile { it != targetLevel }.drop(1) + listOf("exhigh", "standard"))
             .distinct()
-        for (base in bases) {
-            for (level in levels) {
-                val url = base.newBuilder().addPathSegments("api/163_music")
-                    .addQueryParameter("id", id)
-                    .addQueryParameter("level", level)
-                    .addQueryParameter("type", "json")
-                    .addQueryParameter("apikey", settings.chkszApiKey)
-                    .build()
-                val playable = runCatching {
-                    client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                        if (!response.isSuccessful) return@use null
-                        val payload = JSONObject(response.body?.string().orEmpty())
-                        val data = payload.optJSONObject("data") ?: payload
-                        val raw = data.optString("url").ifBlank { payload.optString("url") }
-                            .replace("\\/", "/")
-                            .replaceFirst("http://", "https://")
-                        raw.takeIf { it.startsWith("https://") }
-                    }
-                }.getOrNull()
-                if (playable != null) return playable
-            }
+        for (level in levels) {
+            val url = base.newBuilder().addPathSegments("api/163_music")
+                .addQueryParameter("id", id)
+                .addQueryParameter("level", level)
+                .addQueryParameter("type", "json")
+                .addQueryParameter("apikey", settings.chkszApiKey)
+                .build()
+            val playable = runCatching {
+                client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val payload = JSONObject(response.body?.string().orEmpty())
+                    val data = payload.optJSONObject("data") ?: payload
+                    val raw = data.optString("url").ifBlank { payload.optString("url") }
+                        .replace("\\/", "/")
+                        .replaceFirst("http://", "https://")
+                    raw.takeIf { it.startsWith("https://") }
+                }
+            }.getOrNull()
+            if (playable != null) return playable
         }
         return null
     }
