@@ -1,13 +1,16 @@
 package im.molan.music.data.local
 
-import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 
 class LocalMusicRepository(private val context: Context) {
     suspend fun scanMediaStore(): List<Track> = withContext(Dispatchers.IO) {
@@ -74,5 +77,54 @@ class LocalMusicRepository(private val context: Context) {
         context.checkSelfPermission(android.Manifest.permission.READ_MEDIA_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
     } else {
         context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun indexFile() = File(context.filesDir, "local-music-index.json")
+
+    /** 将最近一次扫描的本地音乐索引落盘，冷启动时先展示缓存再后台重扫，避免“扫描过又没了”。 */
+    suspend fun saveIndex(tracks: List<Track>) = withContext(Dispatchers.IO) {
+        runCatching {
+            indexFile().writeText(JSONObject()
+                .put("createdAt", System.currentTimeMillis())
+                .put("items", JSONArray().apply {
+                    tracks.forEach { put(encodeTrack(it)) }
+                })
+                .toString())
+        }
+    }
+
+    /** 读取上次扫描的本地音乐索引；文件缺失或损坏时返回空列表。 */
+    suspend fun loadIndex(): List<Track> = withContext(Dispatchers.IO) {
+        runCatching {
+            val json = JSONObject(indexFile().readText())
+            val items = json.optJSONArray("items") ?: JSONArray()
+            buildList { for (i in 0 until items.length()) items.optJSONObject(i)?.let { decodeTrack(it)?.let(::add) } }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeTrack(track: Track) = JSONObject()
+        .put("id", track.id)
+        .put("title", track.title)
+        .put("artist", track.artist)
+        .put("album", track.album)
+        .put("duration", track.durationMs)
+        .put("uri", track.uri?.toString().orEmpty())
+        .put("artwork", track.artworkUri?.toString().orEmpty())
+        .put("file", track.localFileName.orEmpty())
+
+    private fun decodeTrack(json: JSONObject): Track? {
+        val id = json.optString("id")
+        if (id.isBlank()) return null
+        return Track(
+            id = id,
+            title = json.optString("title"),
+            artist = json.optString("artist").ifBlank { "未知歌手" },
+            album = json.optString("album"),
+            durationMs = json.optLong("duration"),
+            uri = json.optString("uri").takeIf { it.isNotBlank() }?.let(Uri::parse),
+            artworkUri = json.optString("artwork").takeIf { it.isNotBlank() }?.let(Uri::parse),
+            source = Track.Source.LOCAL,
+            localFileName = json.optString("file").takeIf { it.isNotBlank() },
+        )
     }
 }

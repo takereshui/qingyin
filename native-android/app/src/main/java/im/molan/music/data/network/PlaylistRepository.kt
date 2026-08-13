@@ -49,9 +49,15 @@ class PlaylistRepository(
     /**
      * 将线上歌单落为一份确定性的本地副本。相同来源和歌单 ID 复用同一本地 ID，
      * 因此后续同步会整体覆盖曲目、封面与标题，不会生成重复的本地歌单。
+     * 已是本地副本（source == LOCAL）时直接整单覆盖写入，供播放器写回解析结果，
+     * 绝不重建 ID，也不再抛 require（曾导致打开本地歌单即闪退）。
      */
     suspend fun syncAsLocalPlaylist(detail: PlaylistDetail): PlaylistDetail = withContext(Dispatchers.IO) {
-        require(detail.summary.source != Track.Source.LOCAL) { "本地歌单不需要同步副本" }
+        if (detail.summary.source == Track.Source.LOCAL) {
+            writeLocalSummaries(readLocalSummaries().filterNot { it.id == detail.summary.id } + detail.summary)
+            writeDetail(detail.summary.id, detail)
+            return@withContext detail
+        }
         val sourceLabel = when (detail.summary.source) {
             Track.Source.QQ -> "QQ 音乐"
             Track.Source.NETEASE -> "网易云音乐"

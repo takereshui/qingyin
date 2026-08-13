@@ -6,6 +6,8 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import im.molan.music.data.settings.SettingsRepository
@@ -450,8 +452,20 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         syncForegroundService()
     }
 
-    /** 有活跃任务就拉起前台服务保活；任务全部结束就撤掉。只在边界触发。 */
-    private fun syncForegroundService() = synchronized(stateLock) {
+    /** 有活跃任务就拉起前台服务保活；任务全部结束就撤掉。只在边界触发。
+     * 统一投递到主线程再调用服务，避免持锁线程（下载引擎/批量入队）直接
+     * startForegroundService 导致的主线程调度延迟，进而触发 5 秒前台超时闪退。 */
+    private fun syncForegroundService() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            syncServiceNow()
+        } else {
+            mainHandler.post(::syncServiceNow)
+        }
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun syncServiceNow() = synchronized(stateLock) {
         val hasActive = hasActiveTasks()
         if (hasActive && !serviceActive) {
             serviceActive = true

@@ -3,6 +3,7 @@ package im.molan.music
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import im.molan.music.data.download.DownloadRepository
@@ -39,6 +40,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
@@ -122,6 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         observeCurrentQueueTrack()
         observePlaybackNetworkErrors()
         loadLocalPlaylists()
+        loadLocalMusicIndex()
     }
 
     private fun observeInternalDownloads() {
@@ -137,8 +140,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _downloadedTracks.value = tracks
                     rebuildLocalMatchIndex()
                     refreshShownMatchFlags()
-                    // 新下载已发布进系统媒体库：任务结构变化（含完成）后自动重扫本地，新歌立即出现在本地页。
-                    if (tracks.isNotEmpty() && localRepository.canReadMedia()) scanLocalMusic()
+                    // 新下载已发布进系统媒体库：节流调度本地重扫，新歌尽快出现在本地页且不刷屏。
+                    if (tracks.isNotEmpty() && localRepository.canReadMedia()) scheduleLocalScan()
                 }
                 _downloadMessage.value = when {
                     entries.any { it.status == DownloadEntry.Status.DOWNLOADING } -> "轻音内置下载器正在下载 ${entries.count { it.status == DownloadEntry.Status.DOWNLOADING }} 个任务"
@@ -150,23 +153,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 冷启动先读上次扫描的本地索引立即展示，避免等待全量扫描或扫描前页面为空。
+     * 本地索引落盘后与持久化的本地歌单在同一启动阶段就绪，线上曲目的“本地版”匹配标志可直接生效。
+     */
+    private fun loadLocalMusicIndex() {
+        viewModelScope.launch {
+            if (_localTracks.value.isNotEmpty()) return@launch
+            val cached = runCatching { localRepository.loadIndex() }.getOrDefault(emptyList())
+            if (cached.isEmpty()) return@launch
+            _localTracks.value = cached
+            rebuildLocalMatchIndex()
+            refreshShownMatchFlags()
+            _scanMessage.value = "已载入上次扫描的 ${cached.size} 首本地音乐，正在后台刷新…"
+        }
+    }
+
+    /** 扫描互斥：并发请求合并为一次，避免下载/权限回调/手动按钮同时触发全量扫描。 */
+    private val scanGate = Mutex()
+    private var scanQueued = false
+
+    /**
+     * 全量扫描本地音乐（MediaStore + 自定义目录）并落盘索引。
+     * 单飞：扫描进行中的新请求只置位排队，结束后自动补一次，绝不并发重建索引。
+     */
     fun scanLocalMusic() {
         viewModelScope.launch {
-            _scanMessage.value = "正在扫描本地音乐目录…"
-            val roots = settings.value.customFolderUris
-            runCatching {
-                val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore() else emptyList()
-                val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri)) }
-                (mediaTracks + customTracks).distinctBy { it.id }
+            if (!scanGate.tryLock()) {
+                scanQueued = true
+                return@launch
             }
-                .onSuccess { tracks ->
-                    _localTracks.value = tracks
-                    rebuildLocalMatchIndex()
-                    refreshShownMatchFlags()
-                    _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+            try {
+                _scanMessage.value = "正在扫描本地音乐目录…"
+                val roots = settings.value.customFolderUris
+                runCatching {
+                    val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore() else emptyList()
+                    val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri)) }
+                    (mediaTracks + customTracks).distinctBy { it.id }
                 }
-                .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
+                    .onSuccess { tracks ->
+                        _localTracks.value = tracks
+                        localRepository.saveIndex(tracks)
+                        rebuildLocalMatchIndex()
+                        refreshShownMatchFlags()
+                        _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+                    }
+                    .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
+            } catch (_: Throwable) {
+                _scanMessage.value = "扫描本地音乐时出现异常，请稍后重试"
+            } finally {
+                val rerun = scanQueued
+                scanQueued = false
+                scanGate.unlock()
+                if (rerun) scanLocalMusic()
+            }
         }
+    }
+
+    /** 自动触发的本地重扫（下载完成/结构变化）：10 秒内最多一次，避免批量下载期间全量扫描刷屏。 */
+    private var lastAutoScanAt = 0L
+    private fun scheduleLocalScan() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAutoScanAt < 10_000L) return
+        lastAutoScanAt = now
+        scanLocalMusic()
     }
 
     fun hasMediaPermission(): Boolean = localRepository.canReadMedia()

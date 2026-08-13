@@ -382,25 +382,32 @@ internal fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.
         contentDescription = "${track.title} 封面",
         modifier = modifier,
         shape = shape,
+        localTrack = if (track.source == Track.Source.LOCAL || track.source == Track.Source.DOWNLOADED) track else null,
     )
 }
 
 /**
- * 网络封面本地化：优先查 Room 里的本地路径引用加载磁盘封面；
- * 从网络首次加载成功后把封面落盘并入库，后续离线也走本地文件。
+ * 封面加载：
+ * - 网络封面：优先查 Room 里的本地路径引用加载磁盘封面；首次加载成功后落盘入库。
+ * - 本地音源（localTrack 非空）：直接优先文件内嵌封面，提取一次即永久缓存；
+ *   避免 MediaStore 专辑封面 URI 在多数设备上失效导致封面空白/错配。
  */
 @Composable
-internal fun CachedCoverImage(url: String?, contentDescription: String, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape, placeholder: @Composable (() -> Unit)? = null) {
+internal fun CachedCoverImage(url: String?, contentDescription: String, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape, placeholder: @Composable (() -> Unit)? = null, localTrack: Track? = null) {
     val context = LocalContext.current
     val app = context.applicationContext as QingyinApplication
     val scope = rememberCoroutineScope()
     val isRemote = url?.startsWith("http") == true
-    var localFile by remember(url) { mutableStateOf<File?>(null) }
-    LaunchedEffect(url) {
-        if (isRemote) localFile = runCatching { app.artworkStore.localPathFor(url.orEmpty()) }.getOrNull()
+    var localFile by remember(url, localTrack?.id) { mutableStateOf<File?>(null) }
+    LaunchedEffect(url, localTrack?.id) {
+        localFile = when {
+            isRemote -> runCatching { app.artworkStore.localPathFor(url.orEmpty()) }.getOrNull()
+            localTrack != null -> runCatching { app.artworkStore.localEmbeddedArtwork(localTrack) }.getOrNull()
+            else -> null
+        }
     }
     val source = when {
-        isRemote && localFile != null -> localFile
+        localFile != null -> localFile
         url != null -> Uri.parse(url)
         else -> null
     }
