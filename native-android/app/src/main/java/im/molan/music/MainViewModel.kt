@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -38,12 +39,13 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val localRepository = LocalMusicRepository(application)
     private val customFolderRepository = CustomFolderRepository(application)
-    private val downloadRepository = DownloadRepository(application)
+    private val downloadRepository = (application as QingyinApplication).downloadRepository
     private val ncmRepository = NcmRepository()
     private val dailyRepository = DailyRepository(application, ncmRepository)
     private val playlistRepository = PlaylistRepository(application, ncmRepository)
@@ -70,9 +72,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val downloadMessage: StateFlow<String> = _downloadMessage.asStateFlow()
     private val _downloadActionMessage = MutableStateFlow("")
     val downloadActionMessage: StateFlow<String> = _downloadActionMessage.asStateFlow()
+    /** 下载列表结构指纹：只有任务增减/状态变化才重扫已下载歌曲。 */
+    private var lastDownloadsKey: List<Triple<Long, DownloadEntry.Status, String>> = emptyList()
 
     private val _searchTracks = MutableStateFlow<List<Track>>(emptyList())
     val searchTracks: StateFlow<List<Track>> = _searchTracks.asStateFlow()
+    /** 组合期只查内存标志位，绝不在 Row 重组期间执行 Levenshtein 全量评分。 */
+    private val _localMatchFlags = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val localMatchFlags: StateFlow<Map<String, Boolean>> = _localMatchFlags.asStateFlow()
     private val _dailyTracks = MutableStateFlow<List<Track>>(emptyList())
     val dailyTracks: StateFlow<List<Track>> = _dailyTracks.asStateFlow()
     private val _dailyMessage = MutableStateFlow("")
@@ -117,12 +124,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             downloadRepository.taskEntries.collect { entries ->
                 _downloads.value = entries
-                val tracks = downloadRepository.downloadedTracks()
-                _downloadedTracks.value = tracks
-                rebuildLocalMatchIndex()
+                // 只有完成/重试等结构变化才重扫下载歌曲；纯字节进度刷新只更新任务列表，
+                // 避免下载过程中每 512KB 都全量扫描文件并重建匹配索引造成卡顿。
+                val structureKey = entries.map { Triple(it.id, it.status, it.fileName) }
+                if (structureKey != lastDownloadsKey) {
+                    lastDownloadsKey = structureKey
+                    val tracks = downloadRepository.downloadedTracks()
+                    _downloadedTracks.value = tracks
+                    rebuildLocalMatchIndex()
+                    refreshShownMatchFlags()
+                }
                 _downloadMessage.value = when {
                     entries.any { it.status == DownloadEntry.Status.DOWNLOADING } -> "轻音内置下载器正在下载 ${entries.count { it.status == DownloadEntry.Status.DOWNLOADING }} 个任务"
-                    tracks.isNotEmpty() -> "已完成 ${tracks.size} 首下载音乐"
+                    _downloadedTracks.value.isNotEmpty() -> "已完成 ${_downloadedTracks.value.size} 首下载音乐"
                     entries.any { it.status == DownloadEntry.Status.QUEUED } -> "下载任务等待中"
                     else -> "暂无下载任务"
                 }
@@ -142,6 +156,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { tracks ->
                     _localTracks.value = tracks
                     rebuildLocalMatchIndex()
+                    refreshShownMatchFlags()
                     _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
                 }
                 .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
@@ -158,6 +173,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.onSuccess { (entries, tracks) ->
                 _downloads.value = entries
                 _downloadedTracks.value = tracks
+                rebuildLocalMatchIndex()
+                refreshShownMatchFlags()
                 _downloadMessage.value = if (tracks.isEmpty()) "轻音下载目录暂无已完成的可播放文件" else "已发现 ${tracks.size} 首已下载音乐"
             }.onFailure { error ->
                 _downloadMessage.value = "读取下载队列失败：${error.message ?: "下载目录不可用"}"
@@ -224,7 +241,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // 每次打开均从线上同步；成功后 DailyRepository 会覆盖本地持久化缓存。
             runCatching { dailyRepository.get(settings.value, force = true) }
                 .onSuccess { tracks ->
-                    if (tracks.isNotEmpty()) _dailyTracks.value = tracks
+                    if (tracks.isNotEmpty()) {
+                        _dailyTracks.value = tracks
+                        precomputeMatchFlags(tracks)
+                    }
                     _dailyMessage.value = when {
                         tracks.isNotEmpty() -> "每日推荐已同步到本地"
                         cached.isNotEmpty() -> "正在使用本地每日推荐"
@@ -323,6 +343,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val cached = playlistRepository.cachedDetail(playlist.id)
             if (cached != null) {
                 _playlistDetail.value = cached
+                precomputeMatchFlags(cached.tracks)
                 _playlistMessage.value = "已加载本地歌单，正在同步…"
             } else {
                 _playlistMessage.value = "正在加载 ${playlist.name}…"
@@ -330,6 +351,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
                 .onSuccess { detail ->
                     _playlistDetail.value = detail
+                    precomputeMatchFlags(detail.tracks)
                     persistOnlinePlaylistMetadata(detail)
                     _playlistMessage.value = if (detail.summary.source == Track.Source.LOCAL) "" else "已保存 ${detail.tracks.size} 首曲目到本地歌单缓存；音频不会自动下载"
                 }
@@ -386,9 +408,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else -> runCatching { ncmRepository.search(settings.value, keyword.trim()) }
             }
             result.onSuccess { tracks ->
-                val matches = tracks.associateWith(::findLocalMatch)
-                _searchTracks.value = tracks.sortedByDescending { matches[it]?.score ?: -1f }
-                val localReady = matches.values.count { it != null }
+                val (ordered, localReady) = withContext(Dispatchers.Default) {
+                    val matches = tracks.associateWith(::findLocalMatch)
+                    tracks.sortedByDescending { matches[it]?.score ?: -1f } to matches.count { it.value != null }
+                }
+                _searchTracks.value = ordered
+                precomputeMatchFlags(ordered)
                 _networkMessage.value = when {
                     tracks.isEmpty() -> "未找到相关歌曲"
                     localReady > 0 -> "找到 ${tracks.size} 首歌曲，其中 ${localReady} 首可直接本地播放"
@@ -518,17 +543,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         (_downloadedTracks.value + _localTracks.value).distinctBy { it.id }
 
     private fun rebuildLocalMatchIndex() {
-        localMatchIndex = localPlaybackCandidates()
-            .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
-            .groupBy({ it.first }, { it.second })
-        localMatchCache.clear()
-        localNoMatchCache.clear()
+        synchronized(localMatchCache) {
+            localMatchIndex = localPlaybackCandidates()
+                .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
+                .groupBy({ it.first }, { it.second })
+            localMatchCache.clear()
+            localNoMatchCache.clear()
+        }
+        _localMatchFlags.value = emptyMap()
     }
 
-    private fun findLocalMatch(remote: Track): TrackMatcher.Result? {
+    /**
+     * 批量预计算线上曲目的“本地匹配”标志位。列表组合期间只查这张表，
+     * 绝不在 Row 重组的热路径里执行 TrackMatcher 全量 Levenshtein 评分。
+     * 已算过的 ID 不再重复计算；索引重建后整表清空，由下一次预计算补齐。
+     */
+    fun precomputeMatchFlags(tracks: List<Track>) {
+        val targets = tracks.filter {
+            it.source == Track.Source.NETEASE || it.source == Track.Source.QQ
+        }.filter { it.id !in _localMatchFlags.value }
+        if (targets.isEmpty()) return
+        viewModelScope.launch(Dispatchers.Default) {
+            val additions = buildMap {
+                targets.forEach { track -> put(track.id, findLocalMatch(track) != null) }
+            }
+            _localMatchFlags.value = _localMatchFlags.value + additions
+        }
+    }
+
+    /** 本地音源变化后，对当前界面展示的线上列表统一补齐匹配标志。 */
+    private fun refreshShownMatchFlags() {
+        precomputeMatchFlags(_searchTracks.value)
+        precomputeMatchFlags(_dailyTracks.value)
+        _playlistDetail.value?.tracks?.let(::precomputeMatchFlags)
+    }
+
+    private fun findLocalMatch(remote: Track): TrackMatcher.Result? = synchronized(localMatchCache) {
         val cacheKey = "${remote.source.name}:${remote.id}"
-        localMatchCache[cacheKey]?.let { return it }
-        if (cacheKey in localNoMatchCache) return null
+        localMatchCache[cacheKey]?.let { return@synchronized it }
+        if (cacheKey in localNoMatchCache) return@synchronized null
         val indexed = TrackMatcher.indexKeys(remote)
             .flatMap { key -> localMatchIndex[key].orEmpty() }
             .distinctBy { it.id }
@@ -536,14 +589,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 避免名称无关的歌曲因短字符串、时长或偶然元数据而被错误标为“本地”。
         if (indexed.isEmpty()) {
             localNoMatchCache += cacheKey
-            return null
+            return@synchronized null
         }
         val result = TrackMatcher.findBest(remote, indexed)
         if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
-        return result
+        result
     }
 
-    /** 供列表展示使用：命中结果有缓存，Compose 重组不会反复执行字符串评分。 */
+    /** 仅供播放决策等点击路径使用；列表展示一律查询 localMatchFlags。 */
     fun hasLocalMatch(track: Track): Boolean =
         track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED && findLocalMatch(track) != null
 

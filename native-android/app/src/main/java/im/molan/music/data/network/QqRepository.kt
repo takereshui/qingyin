@@ -75,29 +75,42 @@ class QqRepository(
         val mid = track.qqMid.orEmpty().ifBlank { track.id.removePrefix("qq:") }
         require(mid.isNotBlank()) { "QQ 曲目缺少 MID" }
 
-        val payload = requestChksz(settings, mapOf("mid" to mid, "size" to settings.qqQuality.wireValue, "type" to "json"))
-        val rawUrl = payload.optString("url").replace("\\/", "/")
-        require(rawUrl.isNotBlank()) { payload.optString("msg").ifBlank { "QQ 未提供 ${settings.qqQuality.label} 音源" } }
+        // 下载优先目标音质；失败则按 母带→Hi-Res→FLAC→320→128 降级，避免“下载不可用”。
+        val sizes = if (isDownload) {
+            val descending = listOf("master", "hires", "flac", "320k", "128k")
+            listOf(settings.qqQuality.wireValue) + descending.filterNot { it == settings.qqQuality.wireValue }
+        } else {
+            listOf(settings.qqQuality.wireValue)
+        }
+        var lastFailure = "QQ 未提供 ${settings.qqQuality.label} 音源"
+        for (size in sizes) {
+            val payload = runCatching {
+                requestChksz(settings, mapOf("mid" to mid, "size" to size, "type" to "json"))
+            }.getOrNull() ?: continue
+            val rawUrl = payload.optString("url").replace("\\/", "/")
+            if (rawUrl.isBlank()) continue
 
-        val actual = payload.qQQuality()
-        val format = payload.optString("format").lowercase().takeIf(String::isNotBlank)
-            ?: rawUrl.substringBefore('?').substringAfterLast('.', "mp3")
-        val cover = payload.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse) ?: track.artworkUri
+            val actual = payload.qQQuality()
+            val format = payload.optString("format").lowercase().takeIf(String::isNotBlank)
+                ?: rawUrl.substringBefore('?').substringAfterLast('.', "mp3")
+            val cover = payload.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse) ?: track.artworkUri
 
-        ResolvedQqTrack(
-            track = track.copy(
-                title = payload.optString("name").ifBlank { track.title },
-                artist = payload.optString("singer").ifBlank { track.artist },
-                album = payload.optString("album").ifBlank { track.album },
-                artworkUri = cover,
-                remoteUrl = rawUrl,
-                resolvedQqQuality = actual,
-                audioExtension = format,
-                qqMid = mid,
-                resolvedAt = System.currentTimeMillis(),
-            ),
-            lyric = payload.optString("lrc"),
-        )
+            return@withContext ResolvedQqTrack(
+                track = track.copy(
+                    title = payload.optString("name").ifBlank { track.title },
+                    artist = payload.optString("singer").ifBlank { track.artist },
+                    album = payload.optString("album").ifBlank { track.album },
+                    artworkUri = cover,
+                    remoteUrl = rawUrl,
+                    resolvedQqQuality = actual,
+                    audioExtension = format,
+                    qqMid = mid,
+                    resolvedAt = System.currentTimeMillis(),
+                ),
+                lyric = payload.optString("lrc"),
+            )
+        }
+        error(lastFailure)
     }
 
     suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolve(settings, track, isDownload = true).track

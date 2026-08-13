@@ -105,8 +105,13 @@ class NcmRepository(
             AppSettings.Quality.STANDARD,
         )
 
-        // 下载仅尝试目标音质；播放允许向下兼容。
-        val levels = if (isDownload) listOf(settings.quality) else qualityOrder.dropWhile { it != settings.quality }
+        // 下载优先目标音质，失败时逐级降级，避免“下载不可用”。降级后的真实音质会写回
+        // resolvedQuality，供下载任务与文件名展示，绝不伪造目标音质。
+        val levels = if (isDownload) {
+            qualityOrder.dropWhile { it != settings.quality }
+        } else {
+            qualityOrder.dropWhile { it != settings.quality }
+        }
 
         var lastError = "网易云未返回可用播放地址"
         for (requested in levels) {
@@ -131,21 +136,21 @@ class NcmRepository(
             )
         }
 
-        // 播放失败时尝试 ChKSz 备用线路。
-        if (!isDownload) {
-            chkszFallbackUrl(settings, id)?.let { fallbackUrl ->
-                return@withContext track.copy(
-                    remoteUrl = fallbackUrl,
-                    resolvedQuality = null,
-                    audioExtension = fallbackUrl.substringBefore('?').substringAfterLast('.', "mp3"),
-                    resolvedAt = System.currentTimeMillis()
-                )
-            }
-        } else {
-            lastError = "网易云未提供“${settings.quality.label}”下载地址；可尝试在设置中调低音质或更换线路。"
+        // 播放失败时尝试 ChKSz 备用线路；下载也允许用备用线路兜底，避免整首曲目不可下载。
+        chkszFallbackUrl(settings, id)?.let { fallbackUrl ->
+            return@withContext track.copy(
+                remoteUrl = fallbackUrl,
+                resolvedQuality = null,
+                audioExtension = fallbackUrl.substringBefore('?').substringAfterLast('.', "mp3"),
+                resolvedAt = System.currentTimeMillis()
+            )
         }
 
-        error(lastError)
+        error(if (isDownload) {
+            "网易云未提供“${settings.quality.label}”下载地址；可尝试在设置中调低音质或更换线路。"
+        } else {
+            lastError
+        })
     }
 
     suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = false)

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
@@ -53,6 +54,8 @@ class DownloadRepository(private val context: Context) {
     private val queueLimit = Semaphore(3)
     private val stateLock = Any()
     private val nextId = AtomicLong(System.currentTimeMillis())
+    /** 前台服务启停只按“任务活跃/空闲”边界触发，避免下载进度刷新时反复拉起。 */
+    private var serviceActive = false
     private val storageDir = File(
         context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir,
         "轻音下载",
@@ -63,9 +66,11 @@ class DownloadRepository(private val context: Context) {
     val taskEntries: StateFlow<List<DownloadEntry>> = _taskEntries.asStateFlow()
 
     init {
+        // 应用重启时自动继续未完成的任务；从 .part 文件恢复既有进度实现断点续传。
         _tasks.value.filter { it.status == DownloadEntry.Status.QUEUED || it.status == DownloadEntry.Status.DOWNLOADING }
             .forEach { task ->
-                updateTask(task.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = 0L))
+                val partBytes = File(storageDir, "${task.fileName}.part").length().coerceAtLeast(0L)
+                updateTask(task.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = partBytes, errorMessage = null))
                 schedule(task.id)
             }
     }
@@ -82,9 +87,9 @@ class DownloadRepository(private val context: Context) {
         val result = synchronized(stateLock) {
             val existing = _tasks.value.firstOrNull { downloadIdentity(it.title, it.artist) == identity }
             if (existing != null) {
-                if (existing.status == DownloadEntry.Status.FAILED) {
-                    // 如果任务之前失败了，重新入队时将其重置并再次尝试。
-                    val updated = existing.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = 0L, totalBytes = 0L, errorMessage = null)
+                if (existing.status == DownloadEntry.Status.FAILED || existing.status == DownloadEntry.Status.MISSING) {
+                    // 任务之前失败：保留已下载的 .part 断点，重新排队以便续传。
+                    val updated = existing.copy(status = DownloadEntry.Status.QUEUED, errorMessage = null)
                     _tasks.value = _tasks.value.map { if (it.id == existing.id) updated else it }
                     persistLocked()
                     EnqueueResult(existing.id, added = true)
@@ -124,25 +129,35 @@ class DownloadRepository(private val context: Context) {
         schedule(id)
     }
 
+    /** 仍有排队或下载中的任务时返回 true，用于前台服务保活判断。 */
+    fun hasActiveTasks(): Boolean = _tasks.value.any {
+        it.status == DownloadEntry.Status.QUEUED || it.status == DownloadEntry.Status.DOWNLOADING
+    }
+
+    /** 正在下载的任务数量，供通知文案展示。 */
+    fun activeDownloadCount(): Int = _tasks.value.count { it.status == DownloadEntry.Status.DOWNLOADING }
+
     suspend fun entries(): List<DownloadEntry> = taskEntries.value
 
-    suspend fun downloadedTracks(): List<Track> = _tasks.value
-        .asSequence()
-        .filter { it.status == DownloadEntry.Status.COMPLETED }
-        .map { task -> task to File(storageDir, task.fileName) }
-        .filter { (_, file) -> file.isFile && file.length() > 0L }
-        .map { (task, file) ->
-            Track(
-                id = "download:${task.id}",
-                title = task.title,
-                artist = task.artist.substringBefore(" · ").ifBlank { "未知歌手" },
-                uri = Uri.fromFile(file),
-                source = Track.Source.DOWNLOADED,
-                localFileName = task.fileName,
-            )
-        }
-        .sortedBy { it.title.lowercase() }
-        .toList()
+    suspend fun downloadedTracks(): List<Track> = withContext(Dispatchers.IO) {
+        _tasks.value
+            .asSequence()
+            .filter { it.status == DownloadEntry.Status.COMPLETED }
+            .map { task -> task to File(storageDir, task.fileName) }
+            .filter { (_, file) -> file.isFile && file.length() > 0L }
+            .map { (task, file) ->
+                Track(
+                    id = "download:${task.id}",
+                    title = task.title,
+                    artist = task.artist.substringBefore(" · ").ifBlank { "未知歌手" },
+                    uri = Uri.fromFile(file),
+                    source = Track.Source.DOWNLOADED,
+                    localFileName = task.fileName,
+                )
+            }
+            .sortedBy { it.title.lowercase() }
+            .toList()
+    }
 
     private fun schedule(id: Long) {
         scope.launch { queueLimit.withPermit { download(id) } }
@@ -154,9 +169,14 @@ class DownloadRepository(private val context: Context) {
         val partFile = File(storageDir, "${initial.fileName}.part")
         val finalFile = File(storageDir, initial.fileName)
         runCatching {
-            updateTask(initial.copy(status = DownloadEntry.Status.DOWNLOADING, bytesDownloaded = 0L, totalBytes = 0L))
-            partFile.delete()
-            val request = Request.Builder()
+            // 断点续传：已有 .part 时从既有字节继续，同时写回任务进度。
+            val resumedBytes = if (partFile.isFile) partFile.length().coerceAtLeast(0L) else 0L
+            updateTask(initial.copy(
+                status = DownloadEntry.Status.DOWNLOADING,
+                bytesDownloaded = resumedBytes,
+                totalBytes = initial.totalBytes,
+            ))
+            val requestBuilder = Request.Builder()
                 .url(initial.url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .apply {
@@ -165,27 +185,37 @@ class DownloadRepository(private val context: Context) {
                     }
                 }
                 .get()
-                .build()
+            if (resumedBytes > 0L) requestBuilder.header("Range", "bytes=$resumedBytes-")
+            val request = requestBuilder.build()
             client.newCall(request).execute().use { response ->
-                require(response.isSuccessful) { "下载失败 (HTTP ${response.code})" }
+                require(response.isSuccessful || response.code == 206) { "下载失败 (HTTP ${response.code})" }
                 val body = requireNotNull(response.body) { "下载响应为空" }
-                val total = body.contentLength().let { if (it <= 0L) 0L else it }
-                var downloaded = 0L
-                var lastReported = 0L
+                val serverTotal = body.contentLength()
+                // 服务器没有返回 206 时视为不支持断点续传：丢弃旧 .part 从头下载，避免文件损坏。
+                val canResume = response.code == 206 && resumedBytes > 0L
+                if (!canResume && resumedBytes > 0L) partFile.delete()
+                val total = if (canResume) {
+                    (resumedBytes + serverTotal).coerceAtLeast(resumedBytes)
+                } else {
+                    serverTotal.coerceAtLeast(resumedBytes + serverTotal)
+                }
+                var downloaded = if (canResume) resumedBytes else 0L
+                var lastReported = if (canResume) resumedBytes else 0L
                 body.byteStream().use { input ->
-                    java.io.BufferedOutputStream(FileOutputStream(partFile)).use { output ->
+                    val output = FileOutputStream(partFile, /* append = */ canResume)
+                    java.io.BufferedOutputStream(output).use { buffered ->
                         val buffer = ByteArray(64 * 1024) // 增大缓冲区至 64KB
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
-                            output.write(buffer, 0, count)
+                            buffered.write(buffer, 0, count)
                             downloaded += count
                             if (downloaded - lastReported >= 512 * 1024L || (total > 0L && downloaded == total)) {
                                 lastReported = downloaded
                                 updateTask(id) { it.copy(status = DownloadEntry.Status.DOWNLOADING, bytesDownloaded = downloaded, totalBytes = total) }
                             }
                         }
-                        output.flush()
+                        buffered.flush()
                     }
                 }
                 require(downloaded > 0L) { "下载文件内容为空" }
@@ -194,7 +224,7 @@ class DownloadRepository(private val context: Context) {
                 updateTask(id) { it.copy(status = DownloadEntry.Status.COMPLETED, bytesDownloaded = downloaded, totalBytes = if (total > 0L) total else downloaded, errorMessage = null) }
             }
         }.onFailure { error ->
-            partFile.delete()
+            // 保留 .part 以支持续传，只有明确失败才保留进度文件；完成前不删除。
             updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED, errorMessage = error.message ?: "未知下载错误") }
         }
     }
@@ -234,6 +264,20 @@ class DownloadRepository(private val context: Context) {
             }
         }.toString())
         _taskEntries.value = _tasks.value.map(Task::toEntry).sortedByDescending(DownloadEntry::id)
+        syncForegroundService()
+    }
+
+    /** 有活跃任务就拉起前台服务保活；任务全部结束就撤掉。只在边界触发。 */
+    private fun syncForegroundService() = synchronized(stateLock) {
+        val hasActive = hasActiveTasks()
+        if (hasActive && !serviceActive) {
+            serviceActive = true
+            runCatching { DownloadService.start(context.applicationContext) }
+                .onFailure { serviceActive = false } // 后台启动受限等场景下保活失败不致命，下载照常进行
+        } else if (!hasActive && serviceActive) {
+            serviceActive = false
+            runCatching { DownloadService.stop(context.applicationContext) }
+        }
     }
 
     private fun loadTasks(): List<Task> = runCatching {

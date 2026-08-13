@@ -32,11 +32,23 @@ class PlaybackConnection(context: Context) {
     private var pendingPlayback: Pair<List<Track>, Int>? = null
     private var cachedQueueIds: List<String> = emptyList()
     private var cachedQueue: List<Track> = emptyList()
+    /** 结构或单曲替换都会自增；publish 据此重建队列缓存（同 id 换 URL 也需重建）。 */
+    private var queueVersion = 0
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             if (player.playbackState == Player.STATE_READY) _errorMessage.value = ""
-            publish(player)
+            // 媒体项结构变化时重建队列缓存；纯播放状态/进度走轻量 publishPosition。
+            if (events.contains(Player.EVENT_MEDIA_ITEM_COUNT_CHANGED) ||
+                events.contains(Player.EVENT_MEDIA_ITEMS_CHANGED) ||
+                events.contains(Player.EVENT_MEDIA_ITEM_TRANSITIONED) ||
+                events.contains(Player.EVENT_REPEAT_MODE_CHANGED) ||
+                events.contains(Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)
+            ) {
+                publish(player)
+            } else {
+                publishPosition(player)
+            }
         }
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             _errorMessage.value = "在线音源播放失败：${error.errorCodeName}"
@@ -58,9 +70,10 @@ class PlaybackConnection(context: Context) {
                 publish(mediaController)
             }
         }, ContextCompat.getMainExecutor(appContext))
+        // 位置/播放状态轮询只做轻量发布，绝不逐条遍历 MediaItem。
         scope.launch {
             while (isActive) {
-                controller?.let(::publish)
+                controller?.let(::publishPosition)
                 delay(500)
             }
         }
@@ -89,6 +102,8 @@ class PlaybackConnection(context: Context) {
         } else {
             mediaController.pause()
         }
+        // 显式标记队列重建，即使同一批 id 重入也刷新缓存。
+        queueVersion++
         publish(mediaController)
     }
 
@@ -107,6 +122,7 @@ class PlaybackConnection(context: Context) {
         val mediaController = controller ?: return
         val index = mediaController.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
         mediaController.replaceMediaItem(index, track.toMediaItem())
+        queueVersion++
         if (index in cachedQueue.indices) {
             cachedQueue = cachedQueue.toMutableList().apply { set(index, track) }
         }
@@ -122,6 +138,7 @@ class PlaybackConnection(context: Context) {
         val existing = mediaController.getMediaItemAt(index)
         if (existing.mediaId != track.id) return
         mediaController.replaceMediaItem(index, track.toMediaItem())
+        queueVersion++
         if (index in cachedQueue.indices) {
             cachedQueue = cachedQueue.toMutableList().apply { set(index, track) }
         }
@@ -154,14 +171,17 @@ class PlaybackConnection(context: Context) {
     }
 
     fun removeAt(index: Int) {
-        controller?.takeIf { index in 0 until it.mediaItemCount && it.mediaItemCount > 1 }
-            ?.removeMediaItem(index)
+        val mediaController = controller
+        if (mediaController == null || index !in 0 until mediaController.mediaItemCount || mediaController.mediaItemCount <= 1) return
+        queueVersion++
+        mediaController.removeMediaItem(index)
     }
 
     fun clearKeepingCurrent() {
         val mediaController = controller ?: return
         val current = mediaController.currentMediaItem ?: return
         mediaController.setMediaItem(current, 0L)
+        queueVersion++
         publish(mediaController)
     }
 
@@ -174,20 +194,26 @@ class PlaybackConnection(context: Context) {
 
     private fun publish(player: Player?) {
         if (player == null) return
-        val queueIds = buildList {
-            for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).mediaId)
+        // 结构事件（入队/移除/替换）才重建队列缓存；位置轮询绝不走到这里，避免千首队列每 500ms 全遍历。
+        val ids = buildList { for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).mediaId) }
+        if (ids != cachedQueueIds || queueVersion != lastPublishedQueueVersion) {
+            cachedQueueIds = ids
+            cachedQueue = buildList { for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).toTrack()) }
+            lastPublishedQueueVersion = queueVersion
         }
-        if (queueIds != cachedQueueIds || (queueIds.isEmpty() && cachedQueue.isNotEmpty())) {
-            cachedQueueIds = queueIds
-            cachedQueue = buildList {
-                for (index in 0 until player.mediaItemCount) add(player.getMediaItemAt(index).toTrack())
-            }
-        }
-        val queue = cachedQueue
-        val currentIndex = player.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: -1
-        _snapshot.value = PlayerSnapshot(
-            queue = queue,
-            currentIndex = currentIndex,
+        publishFields(player)
+    }
+
+    /** 轻量发布：只更新播放状态/位置/索引，避免每 500ms 遍历全部 MediaItem。 */
+    private fun publishPosition(player: Player?) {
+        if (player == null) return
+        publishFields(player)
+    }
+
+    private fun publishFields(player: Player) {
+        val snapshot = PlayerSnapshot(
+            queue = cachedQueue,
+            currentIndex = player.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: -1,
             isPlaying = player.isPlaying,
             positionMs = player.currentPosition.coerceAtLeast(0L),
             durationMs = player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0L) ?: 0L,
@@ -198,5 +224,17 @@ class PlaybackConnection(context: Context) {
             },
             isLoading = player.playbackState == Player.STATE_BUFFERING,
         )
+        publishSnapshot(snapshot)
+    }
+
+    private var lastPublished: PlayerSnapshot? = null
+    private var lastPublishedQueueVersion = -1
+
+    /** 相同状态不重复发布，减少 Compose 重组频率。 */
+    private fun publishSnapshot(snapshot: PlayerSnapshot) {
+        val previous = lastPublished
+        if (previous != null && previous == snapshot) return
+        lastPublished = snapshot
+        _snapshot.value = snapshot
     }
 }
