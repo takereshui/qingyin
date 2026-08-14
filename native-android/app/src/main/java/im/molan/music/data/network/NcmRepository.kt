@@ -18,9 +18,6 @@ data class NcmQrCheck(val code: Int, val cookie: String)
 
 data class NcmAccount(val nickname: String, val userId: Long)
 
-/** CDN 约 20min 过期，保守 15min 复用上限 */
-private const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
-
 class NcmRepository(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -78,110 +75,31 @@ class NcmRepository(
     }
 
     /**
-     * 统一解析入口：合并播放与下载路径。
-     * @param isDownload 为 true 时按下载音质解析并强制音质一致；否则按试听音质（线上辅助，省流量）。
-     * 降级后的真实音质写回 resolvedQuality。
+     * 网易云音源只通过用户配置的 ChKSz 私有 API 解析。
+     * NCMC 仅保留搜索、歌单、歌词与登录等元数据能力，绝不再调用其音源端点。
+     * 下载只请求所选音质；在线播放可以由私有 API 依次尝试更低的可用档位。
      */
     suspend fun resolveRemote(settings: AppSettings, track: Track, isDownload: Boolean = false): Track = withContext(Dispatchers.IO) {
         require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
+        require(settings.chkszApiKey.isNotBlank()) { "请先在设置中填写 ChKSz API Key 后再播放或下载网易云音乐" }
 
         val target = if (isDownload) settings.quality else settings.streamQuality
-        val now = System.currentTimeMillis()
-        val ageMs = now - track.resolvedAt
-        val isExpired = ageMs > REMOTE_URL_TTL_MS
-        val url = track.remoteUrl
-        val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
-
-        if (hasValidUrl && !isExpired) {
-            // 下载不能复用音质未知的试听地址，否则会把试听音质误当成下载音质。
-            val qualityMatches = track.resolvedQuality == target || (!isDownload && track.resolvedQuality == null)
-            if (qualityMatches) return@withContext track
-        }
-
         val id = track.id.removePrefix("ncm:")
-        val hasCookie = settings.ncmCookie.isNotBlank()
-        val hasChksz = settings.chkszApiKey.isNotBlank()
-
-        // 下载优先使用用户配置的 ChKSz 私有 API，并且只请求用户选择的目标音质。
-        // 只有私有 API 未返回该档位地址时，才回退到已登录的 NCMC 线路。
-        if (isDownload && hasChksz) {
-            chkszFallbackUrl(settings, id, target, allowDowngrade = false)?.let { privateUrl ->
-                return@withContext track.copy(
-                    remoteUrl = privateUrl,
-                    resolvedQuality = target,
-                    audioExtension = privateUrl.substringBefore('?').substringAfterLast('.', "mp3"),
-                    resolvedAt = System.currentTimeMillis(),
-                )
-            }
-        }
-
-        if (!hasCookie) {
-            chkszFallbackUrl(settings, id, target, allowDowngrade = !isDownload)?.let { fallbackUrl ->
-                return@withContext track.copy(
-                    remoteUrl = fallbackUrl,
-                    resolvedQuality = null,
-                    audioExtension = fallbackUrl.substringBefore('?').substringAfterLast('.', "mp3"),
-                    resolvedAt = System.currentTimeMillis(),
-                )
-            }
-            error(
-                if (hasChksz) "网易云未登录且 ChKSz 未返回可用地址，请先登录网易云账号"
-                else "请先登录网易云账号后再播放/下载",
+        val privateUrl = chkszFallbackUrl(settings, id, target, allowDowngrade = !isDownload)
+            ?: error(
+                if (isDownload) {
+                    "ChKSz 私有 API 未提供“${target.label}”下载地址；请调整下载音质或检查 API 配置"
+                } else {
+                    "ChKSz 私有 API 未提供可播放地址；请检查 API 配置或试听音质"
+                },
             )
-        }
 
-        val qualityOrder = listOf(
-            AppSettings.Quality.JYMASTER,
-            AppSettings.Quality.HIRES,
-            AppSettings.Quality.LOSSLESS,
-            AppSettings.Quality.EXHIGH,
-            AppSettings.Quality.HIGH,
-            AppSettings.Quality.STANDARD,
-        )
-        val levels = if (isDownload) listOf(target) else qualityOrder.dropWhile { it != target }
-
-        var lastError = "网易云未返回可用播放地址（cookie 可能过期或无该音质权益）"
-        for (requested in levels) {
-            val payload = try {
-                request(settings, "/song/url/v1", mapOf("id" to id, "level" to requested.wireValue))
-            } catch (e: Exception) {
-                lastError = e.message?.takeIf { it.isNotBlank() } ?: lastError
-                continue
-            }
-            val row = (payload.optJSONArray("data") ?: JSONArray()).optJSONObject(0) ?: continue
-            val rawUrl = row.optString("url").replace("\\/", "/")
-            if (rawUrl.isBlank()) continue
-
-            val actual = AppSettings.Quality.entries.firstOrNull { it.wireValue == row.optString("level") }
-            val extension = row.optString("type").lowercase().takeIf(String::isNotBlank)
-
-            return@withContext track.copy(
-                remoteUrl = rawUrl,
-                resolvedQuality = actual,
-                audioExtension = extension,
-                resolvedAt = System.currentTimeMillis(),
-            )
-        }
-
-        chkszFallbackUrl(settings, id, target, allowDowngrade = !isDownload)?.let { fallbackUrl ->
-            return@withContext track.copy(
-                remoteUrl = fallbackUrl,
-                resolvedQuality = null,
-                audioExtension = fallbackUrl.substringBefore('?').substringAfterLast('.', "mp3"),
-                resolvedAt = System.currentTimeMillis(),
-            )
-        }
-
-        error(
-            when {
-                isDownload && !hasChksz ->
-                    "ChKSz 与当前 NCMC 均未提供“${target.label}”下载地址；可调低音质、检查登录，或检查私有 API 配置"
-                !hasChksz ->
-                    "$lastError；未配置 ChKSz 兜底"
-                else ->
-                    if (isDownload) "网易云与 ChKSz 均未提供“${target.label}”可用地址"
-                    else "$lastError；ChKSz 兜底也失败"
-            },
+        // 不复用旧 remoteUrl，防止歌单缓存或历史队列继续使用此前由 NCMC 解析出的音源地址。
+        track.copy(
+            remoteUrl = privateUrl,
+            resolvedQuality = null,
+            audioExtension = privateUrl.substringBefore('?').substringAfterLast('.', "mp3"),
+            resolvedAt = System.currentTimeMillis(),
         )
     }
 

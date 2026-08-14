@@ -244,6 +244,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryDownload(id: Long) = downloadRepository.retry(id)
 
+    fun removeDownloadRecord(id: Long) {
+        if (!downloadRepository.removeRecord(id)) return
+        _downloadActionMessage.value = "已删除下载记录；已完成的音乐文件仍保留在下载目录"
+        refreshDownloads()
+    }
+
     fun playDownloaded(track: Track) {
         val queue = _downloadedTracks.value
         playback.playQueue(queue, queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0))

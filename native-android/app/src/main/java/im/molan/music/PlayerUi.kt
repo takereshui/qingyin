@@ -606,14 +606,14 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
                         FilledTonalButton(onClick = onClearCache, modifier = Modifier.height(48.dp)) { Text("清空缓存") }
                     }
                 }
-                item { Text("网易云私有服务", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+                item { Text("网易云数据服务", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(primaryNcm, { primaryNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("主 NCMC 地址") }, singleLine = true) }
                 item { TextField(backupNcm, { backupNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("备用 NCMC 地址（可选）") }, singleLine = true) }
                 item { SettingRow("使用备用 NCMC", "主线路异常时可手动切换", Icons.Default.Refresh, useBackupNcm) { useBackupNcm = !useBackupNcm } }
                 item { Text("QQ / ChKSz API", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
                 item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（必填）") }, singleLine = true) }
-                item { Text("QQ 搜索与网易云下载会优先走你配置的 ChKSz 主线路，必须填写 API Key；私有 API 未返回目标音质时，网易云下载才回退到已登录的 NCMC。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("NCMC 仅用于网易云搜索、歌单、歌词与登录等数据服务，不再获取任何音源。QQ 搜索及网易云播放/下载只使用你配置的 ChKSz 主线路，必须填写 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = {

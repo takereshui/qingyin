@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
@@ -231,7 +232,13 @@ internal fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, 
         item { Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (entries.isNotEmpty()) {
             item { Text("内置下载任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-            items(entries, key = DownloadEntry::id) { entry -> DownloadTaskRow(entry, onRetry = { model.retryDownload(entry.id) }) }
+            items(entries, key = DownloadEntry::id) { entry ->
+                DownloadTaskRow(
+                    entry = entry,
+                    onRetry = { model.retryDownload(entry.id) },
+                    onRemove = { model.removeDownloadRecord(entry.id) },
+                )
+            }
         }
         item { Text("已下载音乐", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
         if (tracks.isEmpty()) item { EmptyHint("尚未发现已完成的音乐。下载完成后会写入 Music/轻音下载 并自动进入本地扫描。") }
@@ -240,7 +247,7 @@ internal fun DownloadsScreen(entries: List<DownloadEntry>, tracks: List<Track>, 
 }
 
 @Composable
-internal fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit) {
+internal fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit, onRemove: () -> Unit) {
     val progress = if (entry.totalBytes > 0L) (entry.bytesDownloaded.toFloat() / entry.totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
     Card(shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -249,10 +256,15 @@ internal fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit) {
                     Text(entry.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(entry.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (entry.status == DownloadEntry.Status.FAILED) {
-                    TextButton(onClick = onRetry) { Text("重试") }
-                } else {
-                    Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (entry.status == DownloadEntry.Status.FAILED) {
+                        TextButton(onClick = onRetry) { Text("重试") }
+                    } else {
+                        Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Delete, "删除下载记录")
+                    }
                 }
             }
             if (entry.status == DownloadEntry.Status.FAILED && !entry.errorMessage.isNullOrBlank()) {

@@ -155,6 +155,24 @@ class DownloadRepository(private val context: Context, private val settingsRepos
     }
 
     /**
+     * 删除轻音内置下载任务记录。对排队、下载中和失败任务会清理私有临时文件；
+     * 已完成任务只删除轻音的记录，不删除用户已写入 MediaStore、SAF 或公共 Music 目录的音频文件。
+     */
+    fun removeRecord(id: Long): Boolean {
+        val removed = synchronized(stateLock) {
+            val task = _tasks.value.firstOrNull { it.id == id } ?: return@synchronized null
+            _tasks.value = _tasks.value.filterNot { it.id == id }
+            persistLocked()
+            task
+        } ?: return false
+        if (removed.status != DownloadEntry.Status.COMPLETED) {
+            File(workDir, "${removed.fileName}.part").delete()
+            File(workDir, removed.fileName).delete()
+        }
+        return true
+    }
+
+    /**
      * 在线试听缓存已完整命中时直接“另存”为下载：从缓存读取字节写入下载目录并发布，
      * 不重新请求网络，秒完成。readBytes 由调用方提供缓存字节流。
      */
@@ -203,6 +221,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
             val input = readBytes() ?: error("在线缓存未命中，请稍后重试")
             input.use { src -> finalFile.outputStream().use { dst -> src.copyTo(dst) } }
             require(finalFile.length() > 0L) { "缓存内容为空" }
+            if (_tasks.value.none { it.id == task.id }) {
+                finalFile.delete()
+                return@runCatching
+            }
             val published = publishCompleted(finalFile, task.fileName.substringAfter('-'))
             updateTask(
                 task.copy(
@@ -312,6 +334,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     java.io.BufferedOutputStream(output).use { buffered ->
                         val buffer = ByteArray(64 * 1024) // 增大缓冲区至 64KB
                         while (true) {
+                            if (_tasks.value.none { it.id == id }) {
+                                throw java.util.concurrent.CancellationException("下载任务已删除")
+                            }
                             val count = input.read(buffer)
                             if (count < 0) break
                             buffered.write(buffer, 0, count)
@@ -325,6 +350,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     }
                 }
                 require(downloaded > 0L) { "下载文件内容为空" }
+                if (_tasks.value.none { it.id == id }) {
+                    partFile.delete()
+                    return
+                }
                 if (finalFile.exists()) finalFile.delete()
                 require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
                 // 完成后发布到公共目录（MediaStore / SAF / 公共 Music），让系统媒体库与外部播放器可见。
