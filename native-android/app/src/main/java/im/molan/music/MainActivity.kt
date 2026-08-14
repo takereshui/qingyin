@@ -61,6 +61,7 @@ private enum class AppTab(val title: String) { HOME("首页"), SEARCH("搜索"),
 
 @Composable
 private fun QingyinApp(model: MainViewModel = viewModel()) {
+    var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     val settings by model.settings.collectAsStateWithLifecycle()
     val tracks by model.localTracks.collectAsStateWithLifecycle()
     val scanMessage by model.scanMessage.collectAsStateWithLifecycle()
@@ -76,15 +77,24 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val myPlaylists by model.myPlaylists.collectAsStateWithLifecycle()
     val importedPlaylists by model.importedPlaylists.collectAsStateWithLifecycle()
     val localPlaylists by model.localPlaylists.collectAsStateWithLifecycle()
-    val downloads by model.downloads.collectAsStateWithLifecycle()
-    val downloadedTracks by model.downloadedTracks.collectAsStateWithLifecycle()
-    val downloadMessage by model.downloadMessage.collectAsStateWithLifecycle()
+    // 下载字节进度会频繁更新；仅在下载页可见时订阅，避免后台下载拖慢首页和播放页。
+    val downloads = if (tab == AppTab.DOWNLOADS) {
+        val value by model.downloads.collectAsStateWithLifecycle()
+        value
+    } else emptyList()
+    val downloadedTracks = if (tab == AppTab.DOWNLOADS) {
+        val value by model.downloadedTracks.collectAsStateWithLifecycle()
+        value
+    } else emptyList()
+    val downloadMessage = if (tab == AppTab.DOWNLOADS) {
+        val value by model.downloadMessage.collectAsStateWithLifecycle()
+        value
+    } else ""
     val downloadActionMessage by model.downloadActionMessage.collectAsStateWithLifecycle()
     val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
     val playlistMessage by model.playlistMessage.collectAsStateWithLifecycle()
     val matchFlags by model.localMatchFlags.collectAsStateWithLifecycle()
     val homePlaylists = (myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }
-    var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     var queueVisible by rememberSaveable { mutableStateOf(false) }
     var playerVisible by rememberSaveable { mutableStateOf(false) }
     var ncmLoginVisible by rememberSaveable { mutableStateOf(false) }

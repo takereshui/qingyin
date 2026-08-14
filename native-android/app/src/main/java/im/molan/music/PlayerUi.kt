@@ -78,6 +78,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -88,10 +89,12 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import im.molan.music.model.AppSettings
 import java.io.File
 import im.molan.music.model.DownloadEntry
@@ -436,19 +439,18 @@ private fun PlaybackControlPanel(
 
 @Composable
 internal fun CoverBackdrop(track: Track) {
-    val context = LocalContext.current
-    val source = track.artworkUri ?: track.uri
+    val source = track.artworkUri?.toString() ?: track.uri?.toString()
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (source != null) {
-            AsyncImage(
-                model = ImageRequest.Builder(context).data(source).size(720).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize().blur(40.dp),
-                            alpha = 0.82f,
-
-            )
-        }
+        // 与列表和封面页共用同一加载器：本地/下载曲目先用内嵌封面，线上曲目走网络或磁盘缓存。
+        CachedCoverImage(
+            url = source,
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize().blur(40.dp),
+            shape = RectangleShape,
+            localTrack = if (track.source == Track.Source.LOCAL || track.source == Track.Source.DOWNLOADED) track else null,
+            contentScale = ContentScale.Crop,
+            placeholder = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) },
+        )
     }
 }
 
@@ -470,21 +472,25 @@ internal fun CoverArt(track: Track, modifier: Modifier, shape: androidx.compose.
  *   避免 MediaStore 专辑封面 URI 在多数设备上失效导致封面空白/错配。
  */
 @Composable
-internal fun CachedCoverImage(url: String?, contentDescription: String, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape, placeholder: @Composable (() -> Unit)? = null, localTrack: Track? = null) {
+internal fun CachedCoverImage(url: String?, contentDescription: String?, modifier: Modifier, shape: androidx.compose.ui.graphics.Shape, placeholder: @Composable (() -> Unit)? = null, localTrack: Track? = null, contentScale: ContentScale = ContentScale.Fit) {
     val context = LocalContext.current
     val app = context.applicationContext as QingyinApplication
     val scope = rememberCoroutineScope()
     val isRemote = url?.startsWith("http") == true
     var localFile by remember(url, localTrack?.id) { mutableStateOf<File?>(null) }
+    var localArtworkResolved by remember(url, localTrack?.id) { mutableStateOf(localTrack == null) }
     LaunchedEffect(url, localTrack?.id) {
         localFile = when {
             isRemote -> runCatching { app.artworkStore.localPathFor(url.orEmpty()) }.getOrNull()
             localTrack != null -> runCatching { app.artworkStore.localEmbeddedArtwork(localTrack) }.getOrNull()
             else -> null
         }
+        if (localTrack != null) localArtworkResolved = true
     }
     val source = when {
         localFile != null -> localFile
+        // 本地曲目先等待内嵌封面缓存结果，避免毛玻璃先闪现错误的系统专辑封面。
+        localTrack != null && !localArtworkResolved -> null
         url != null -> Uri.parse(url)
         else -> null
     }
@@ -505,17 +511,20 @@ internal fun CachedCoverImage(url: String?, contentDescription: String, modifier
                     if (isRemote && url != null && localFile == null) {
                         val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
                         if (bitmap != null) scope.launch {
-                            val file = app.artworkStore.fileFor(url)
-                            runCatching {
-                                java.io.FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-                            }.onSuccess {
-                                runCatching { app.artworkStore.remember(url, file) }
+                            withContext(Dispatchers.IO) {
+                                val file = app.artworkStore.fileFor(url)
+                                runCatching {
+                                    java.io.FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                                }.onSuccess {
+                                    runCatching { app.artworkStore.remember(url, file) }
+                                }
                             }
                         }
                     }
                 })
                 .build(),
             contentDescription = contentDescription,
+            contentScale = contentScale,
             modifier = modifier.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer),
         )
     }

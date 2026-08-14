@@ -116,6 +116,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeLyricKey: String = ""
     private var queueResolveJob: Job? = null
     private var resolvingQueueTrackId: String? = null
+    private var lookAheadResolveJob: Job? = null
+    private var lookingAheadTrackId: String? = null
     private var backgroundParseJob: Job? = null
     /** 同一 trackId 仅自动重解析一次，防 IO_NETWORK 死循环 */
     private var lastAutoReresolveId: String? = null
@@ -516,8 +518,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val localDetail = playlistRepository.syncAsLocalPlaylist(detail)
         _localPlaylists.value = _localPlaylists.value
             .filterNot { it.id == localDetail.summary.id } + localDetail.summary
-        // 开启后台全量解析，将 API 链路直接写入本地数据库（JSON 缓存）。
-        startBackgroundPlaylistParsing(localDetail)
+        // 不再打开歌单即后台解析全部曲目：播放时按需解析当前曲目，并仅预解析下一首。
+        // 这避免大歌单在后台持续网络请求、序列化整份 JSON 并占用 CPU/I/O。
     }
 
     private fun startBackgroundPlaylistParsing(detail: PlaylistDetail) {
@@ -595,7 +597,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 监听播放器当前项；只有真正切到尚无地址或地址已过期的线上曲目时才进行来源 API 解析。 */
     private fun observeCurrentQueueTrack() {
         viewModelScope.launch {
-            playback.snapshot.collect { snapshot ->
+            // 当前曲目解析、歌词保证与下一首预解析只关心结构状态，不应跟随 500ms 进度快照重复执行。
+            playback.chromeSnapshot.collect { snapshot ->
                 val current = snapshot.current ?: return@collect
                 val needsResolve = !playback.isTrackPlayable(current) && (current.source == Track.Source.NETEASE || current.source == Track.Source.QQ)
                 if (needsResolve) resolveCurrentQueueTrack(current) else {
@@ -629,20 +632,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (nextIdx !in snapshot.queue.indices) return
         val nextTrack = snapshot.queue[nextIdx]
         if (playback.isTrackPlayable(nextTrack) || (nextTrack.source != Track.Source.NETEASE && nextTrack.source != Track.Source.QQ)) return
-        viewModelScope.launch {
+        // chromeSnapshot 仍可能因缓冲、模式等状态变化发射；同一首预解析中的歌曲绝不重复请求。
+        if (lookingAheadTrackId == nextTrack.id && lookAheadResolveJob?.isActive == true) return
+        lookAheadResolveJob?.cancel()
+        lookingAheadTrackId = nextTrack.id
+        lookAheadResolveJob = viewModelScope.launch {
             runCatching { withTimeout(15_000L) { resolveDownloadTrack(nextTrack) } }.onSuccess { playable ->
-                playback.updateQueueItem(nextIdx, playable)
-                // 同时静默写回本地缓存，让持久化链路随听随刷。
-                val detail = _playlistDetail.value
-                if (detail != null && detail.tracks.any { it.id == nextTrack.id }) {
-                    val nextTracks = detail.tracks.toMutableList()
-                    val idx = nextTracks.indexOfFirst { it.id == nextTrack.id }
-                    if (idx >= 0) {
-                        nextTracks[idx] = playable
-                        playlistRepository.syncAsLocalPlaylist(detail.copy(tracks = nextTracks))
-                    }
+                if (playback.snapshot.value.queue.getOrNull(nextIdx)?.id == nextTrack.id) {
+                    playback.updateQueueItem(nextIdx, playable)
                 }
             }
+            if (lookingAheadTrackId == nextTrack.id) lookingAheadTrackId = null
         }
     }
 
@@ -1098,6 +1098,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { getApplication<Application>().contentResolver.unregisterContentObserver(mediaStoreObserver) }
         mediaStoreRefreshJob?.cancel()
         qrLoginJob?.cancel()
+        lyricsJob?.cancel()
+        queueResolveJob?.cancel()
+        lookAheadResolveJob?.cancel()
+        backgroundParseJob?.cancel()
         playback.release()
         super.onCleared()
     }

@@ -11,6 +11,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
+import com.mpatric.mp3agic.ID3v24Tag
+import com.mpatric.mp3agic.Mp3File
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
@@ -248,12 +250,14 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 finalFile.delete()
                 return@runCatching
             }
-            val published = publishCompleted(finalFile, task.fileName.substringAfter('-'))
+            val completedBytes = finalFile.length()
+            writeAuthoritativeMp3Metadata(finalFile, task)
+            val published = publishCompleted(finalFile, task)
             updateTask(
                 task.copy(
                     status = DownloadEntry.Status.COMPLETED,
-                    bytesDownloaded = finalFile.length(),
-                    totalBytes = finalFile.length(),
+                    bytesDownloaded = completedBytes,
+                    totalBytes = completedBytes,
                     errorMessage = null,
                     mediaUri = published?.mediaUri,
                     finalPath = published?.finalPath,
@@ -290,12 +294,14 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 ?: File(workDir, fileName).takeIf { it.isFile && it.length() > 0L }
                 ?: File(legacyDir, fileName).takeIf { it.isFile && it.length() > 0L }
                 ?: return null).let(Uri::fromFile)
-        val tags = readEmbeddedMetadata(playableUri)
+        // 新任务已持久化歌单/搜索阶段的权威字段；只有旧任务缺字段时才触发昂贵的文件标签读取。
+        val needsEmbeddedFallback = title.isBlank() || artist.isBlank() || album.isBlank() || durationMs <= 0L
+        val tags = if (needsEmbeddedFallback) readEmbeddedMetadata(playableUri) else EmbeddedMetadata()
         return Track(
             id = "download:$id",
             // 线上解析得到的标题、歌手优先，文件标签作为旧任务或缺失字段的回退。
             title = title.ifBlank { tags.title ?: "轻音下载" },
-            artist = artist.substringBefore(" · ").ifBlank { tags.artist ?: "未知歌手" },
+            artist = artist.ifBlank { tags.artist ?: "未知歌手" },
             album = album.ifBlank { tags.album.orEmpty() },
             durationMs = durationMs.takeIf { it > 0L } ?: tags.durationMs,
             uri = playableUri,
@@ -403,8 +409,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 }
                 if (finalFile.exists()) finalFile.delete()
                 require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
+                // 下载 API 可能返回裸音频；先把歌单/搜索阶段的原始字段写入可写 MP3，再发布到公开目录。
+                writeAuthoritativeMp3Metadata(finalFile, initial)
                 // 完成后发布到公共目录（MediaStore / SAF / 公共 Music），让系统媒体库与外部播放器可见。
-                val published = publishCompleted(finalFile, initial.fileName.substringAfter('-'))
+                val published = publishCompleted(finalFile, initial)
                 updateTask(id) {
                     it.copy(
                         status = DownloadEntry.Status.COMPLETED,
@@ -426,14 +434,61 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         "${title.trim().lowercase()}|${artist.substringBefore(" · ").trim().lowercase()}"
 
     /**
+     * 下载接口有时仅提供裸 MP3 字节；这里以入队时保存的歌单/搜索原始字段为唯一权威来源。
+     * 非 MP3 容器保留原始音频，不伪造不兼容的标签；展示层和 MediaStore 仍使用任务字段。
+     */
+    private fun writeAuthoritativeMp3Metadata(file: File, task: Task) {
+        if (!file.name.endsWith(".mp3", ignoreCase = true) || !file.isFile || file.length() <= 0L) return
+        runCatching {
+            val mp3 = Mp3File(file.absolutePath)
+            val tag = if (mp3.hasId3v2Tag()) mp3.id3v2Tag else ID3v24Tag().also(mp3::setId3v2Tag)
+            tag.title = task.title
+            tag.artist = task.artist
+            tag.album = task.album
+            tag.albumArtist = task.artist
+            task.artworkUri?.let(::downloadArtworkForTag)?.let { (bytes, mime) ->
+                tag.setAlbumImage(bytes, mime)
+            }
+            val tagged = File(file.parentFile, "${file.name}.tagged-${task.id}")
+            tagged.delete()
+            mp3.save(tagged.absolutePath)
+            if (tagged.isFile && tagged.length() > 0L) {
+                file.delete()
+                if (!tagged.renameTo(file)) {
+                    tagged.copyTo(file, overwrite = true)
+                    tagged.delete()
+                }
+            }
+        }
+    }
+
+    /** 下载任务已处于 I/O 工作线程；封面限制在 4MB 以内，避免异常图片挤占内存。 */
+    private fun downloadArtworkForTag(url: String): Pair<ByteArray, String>? {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return null
+        return runCatching {
+            val request = Request.Builder().url(url).header("User-Agent", "Qingyin/1.0").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body ?: return@use null
+                if (body.contentLength() > 4L * 1024L * 1024L) return@use null
+                val bytes = body.bytes()
+                if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return@use null
+                val mime = response.header("Content-Type")?.substringBefore(';')?.takeIf { it.startsWith("image/") }
+                    ?: if (url.substringBefore('?').endsWith(".png", ignoreCase = true)) "image/png" else "image/jpeg"
+                bytes to mime
+            }
+        }.getOrNull()
+    }
+
+    /**
      * 把已完成的音频文件发布到用户可见目录：
      * 1) 用户选了 SAF 下载目录 → 写入该目录；
      * 2) Android 10+ → 注册进 MediaStore（公共 Music/轻音下载，系统自动索引）；
      * 3) 更早版本 → 直接写公共 Music 目录并通知媒体扫描（无权限时保留在私有工作目录兜底）。
      * 返回 PublishResult 供任务持久化；任何失败都不影响已完成文件继续可播。
      */
-    private fun publishCompleted(file: File, displayName: String): PublishResult? {
-        val safeName = displayName.ifBlank { file.name }.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120)
+    private fun publishCompleted(file: File, task: Task): PublishResult? {
+        val safeName = task.fileName.substringAfter('-').ifBlank { file.name }.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(120)
         val mime = mimeType(safeName)
         customDownloadFolder?.takeIf(String::isNotBlank)?.let { treeUri ->
             return runCatching {
@@ -451,6 +506,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 val values = ContentValues().apply {
                     put(MediaStore.Audio.Media.DISPLAY_NAME, safeName)
                     put(MediaStore.Audio.Media.MIME_TYPE, mime)
+                    put(MediaStore.Audio.Media.TITLE, task.title)
+                    put(MediaStore.Audio.Media.ARTIST, task.artist)
+                    put(MediaStore.Audio.Media.ALBUM, task.album)
                     put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/轻音下载")
                     put(MediaStore.Audio.Media.IS_PENDING, 1)
                 }
