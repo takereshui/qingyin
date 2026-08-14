@@ -77,6 +77,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val downloadActionMessage: StateFlow<String> = _downloadActionMessage.asStateFlow()
     /** 下载列表结构指纹：只有任务增减/状态变化才重扫已下载歌曲。 */
     private var lastDownloadsKey: List<Triple<Long, DownloadEntry.Status, String>> = emptyList()
+    /** 下载任务列表首次 emit 不触发本地重扫（冷启动全扫由启动流程兜底）。 */
+    private var seenDownloadStructure = false
 
     private val _searchTracks = MutableStateFlow<List<Track>>(emptyList())
     val searchTracks: StateFlow<List<Track>> = _searchTracks.asStateFlow()
@@ -135,13 +137,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // 避免下载过程中每 512KB 都全量扫描文件并重建匹配索引造成卡顿。
                 val structureKey = entries.map { Triple(it.id, it.status, it.fileName) }
                 if (structureKey != lastDownloadsKey) {
+                    val firstEmission = !seenDownloadStructure
+                    seenDownloadStructure = true
                     lastDownloadsKey = structureKey
                     val tracks = downloadRepository.downloadedTracks()
                     _downloadedTracks.value = tracks
                     rebuildLocalMatchIndex()
                     refreshShownMatchFlags()
                     // 新下载已发布进系统媒体库：节流调度本地重扫，新歌尽快出现在本地页且不刷屏。
-                    if (tracks.isNotEmpty() && localRepository.canReadMedia()) scheduleLocalScan()
+                    // 首次 emit 不调度——冷启动全量扫描由 MainActivity 启动流程兜底，避免重复整扫。
+                    if (!firstEmission && tracks.isNotEmpty() && localRepository.canReadMedia()) scheduleLocalScan()
                 }
                 _downloadMessage.value = when {
                     entries.any { it.status == DownloadEntry.Status.DOWNLOADING } -> "轻音内置下载器正在下载 ${entries.count { it.status == DownloadEntry.Status.DOWNLOADING }} 个任务"
@@ -169,26 +174,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 扫描互斥：并发请求合并为一次，避免下载/权限回调/手动按钮同时触发全量扫描。 */
+    /** 扫描互斥：并发请求一律吞掉，绝不排队补扫——扫描进行中再次发起的请求直接忽略。 */
     private val scanGate = Mutex()
-    private var scanQueued = false
+    /** 上次扫描真正结束的时刻，自动重扫以它做节流基准，避免下载完成后又立刻整库重扫。 */
+    private var lastScanDoneAt = 0L
 
     /**
      * 全量扫描本地音乐（MediaStore + 自定义目录）并落盘索引。
-     * 单飞：扫描进行中的新请求只置位排队，结束后自动补一次，绝不并发重建索引。
+     * 单飞原则：扫描期间任何新请求（启动、授权回调、目录恢复、下载完成、手动按钮）
+     * 都不再叠加扫描，直接忽略；结果与上次索引做增量，只对新增文件提取元数据。
      */
     fun scanLocalMusic() {
         viewModelScope.launch {
-            if (!scanGate.tryLock()) {
-                scanQueued = true
-                return@launch
-            }
+            if (!scanGate.tryLock()) return@launch
             try {
                 _scanMessage.value = "正在扫描本地音乐目录…"
                 val roots = settings.value.customFolderUris
+                // 上次索引（含冷启动载入的落盘缓存）作为增量基准，uri 未变的音轨直接复用。
+                val previous = (_localTracks.value + _downloadedTracks.value)
+                    .filter { !it.uri.isNullOrBlank() }
+                    .distinctBy { it.uri.toString() }
+                    .associateBy { it.uri.toString() }
                 runCatching {
-                    val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore() else emptyList()
-                    val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri)) }
+                    val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore(previous) else emptyList()
+                    val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri), previous) }
                     (mediaTracks + customTracks).distinctBy { it.id }
                 }
                     .onSuccess { tracks ->
@@ -202,20 +211,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Throwable) {
                 _scanMessage.value = "扫描本地音乐时出现异常，请稍后重试"
             } finally {
-                val rerun = scanQueued
-                scanQueued = false
+                lastScanDoneAt = SystemClock.elapsedRealtime()
                 scanGate.unlock()
-                if (rerun) scanLocalMusic()
             }
         }
     }
 
-    /** 自动触发的本地重扫（下载完成/结构变化）：10 秒内最多一次，避免批量下载期间全量扫描刷屏。 */
-    private var lastAutoScanAt = 0L
+    /** 自动触发的本地重扫（下载完成/结构变化）：距上次扫描结束 10 秒内不重复整扫。 */
     private fun scheduleLocalScan() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAutoScanAt < 10_000L) return
-        lastAutoScanAt = now
+        if (SystemClock.elapsedRealtime() - lastScanDoneAt < 10_000L) return
         scanLocalMusic()
     }
 

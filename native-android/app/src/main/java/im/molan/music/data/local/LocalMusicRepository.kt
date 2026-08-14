@@ -13,7 +13,7 @@ import org.json.JSONObject
 import java.io.File
 
 class LocalMusicRepository(private val context: Context) {
-    suspend fun scanMediaStore(): List<Track> = withContext(Dispatchers.IO) {
+    suspend fun scanMediaStore(previous: Map<String, Track> = emptyMap()): List<Track> = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -49,8 +49,14 @@ class LocalMusicRepository(private val context: Context) {
             buildList {
                 while (cursor.moveToNext()) {
                     val mediaId = cursor.getLong(idCol)
-                    val albumId = cursor.getLong(albumIdCol)
                     val uri = ContentUris.withAppendedId(collection, mediaId)
+                    // 文件未变直接复用上次索引缓存，免去逐行重建 Track（重启后 MediaStore 扫描基本零构造）。
+                    val cacheHit = previous[uri.toString()]
+                    if (cacheHit != null && cacheHit.id == "local:$mediaId") {
+                        add(cacheHit)
+                        continue
+                    }
+                    val albumId = cursor.getLong(albumIdCol)
                     val artwork = ContentUris.withAppendedId(
                         MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI,
                         albumId,

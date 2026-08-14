@@ -16,14 +16,17 @@ class CustomFolderRepository(private val context: Context) {
     /** MediaMetadataRetriever 单文件初始化较重，固定并发提取元数据，大目录提速明显。 */
     private val metadataSemaphore = Semaphore(4)
 
-    suspend fun scan(treeUri: Uri, maxDepth: Int = 24): List<Track> = withContext(Dispatchers.IO) {
+    suspend fun scan(treeUri: Uri, previous: Map<String, Track> = emptyMap(), maxDepth: Int = 24): List<Track> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext emptyList()
         val files = mutableListOf<DocumentFile>()
         walk(root, 0, maxDepth, files)
-        files.map { file ->
+        // 只提取新出现的文件，已缓存的音轨（时长/标签）直接复用，重启与重复扫描零 retriever 开销。
+        val toExtract = files.filter { "saf:${it.uri}" !in previous }
+        val newTracks = toExtract.map { file ->
             async { metadataSemaphore.withPermit { file.toTrack() } }
         }.awaitAll()
-            .sortedWith(compareBy<Track> { it.title.lowercase() }.thenBy { it.artist.lowercase() })
+        val kept = files.mapNotNull { file -> previous["saf:${file.uri}"] }
+        (kept + newTracks).sortedWith(compareBy<Track> { it.title.lowercase() }.thenBy { it.artist.lowercase() })
     }
 
     private fun walk(folder: DocumentFile, depth: Int, maxDepth: Int, out: MutableList<DocumentFile>) {
