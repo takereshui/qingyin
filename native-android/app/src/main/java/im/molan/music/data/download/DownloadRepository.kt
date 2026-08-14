@@ -265,7 +265,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 ),
             )
         }.onFailure { error ->
-            updateTask(task.copy(status = DownloadEntry.Status.FAILED, errorMessage = error.message ?: "缓存另存失败"))
+            val message = error.message?.takeIf(String::isNotBlank) ?: "缓存另存失败：${error.javaClass.simpleName}"
+            updateTask(task.copy(status = DownloadEntry.Status.FAILED, errorMessage = message))
         }
     }
 
@@ -427,7 +428,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
             }
         }.onFailure { error ->
             // 保留 .part 以支持续传，只有明确失败才保留进度文件；完成前不删除。
-            updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED, errorMessage = error.message ?: "未知下载错误") }
+            val message = error.message?.takeIf(String::isNotBlank) ?: "下载处理失败：${error.javaClass.simpleName}"
+            updateTask(id) { it.copy(status = DownloadEntry.Status.FAILED, errorMessage = message) }
         }
     }
 
