@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!--
+      轻音集中使用 Media3 的播放恢复、HTTP 数据源与会话能力。
+      该许可仅适用于 app 模块；升级 Media3 时必须在 CI 中重新验证播放、通知与后台恢复。
+    -->
+    <issue id="UnsafeOptInUsageError">
+        <option name="opt-in" value="androidx.media3.common.util.UnstableApi" />
+    </issue>
+</lint>

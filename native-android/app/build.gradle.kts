@@ -30,21 +30,32 @@ android {
     val releaseSigningConfig = signingConfigs.maybeCreate("release")
     val legacyKeystorePath = signingProperty("qingyin.legacy.keystore")
     if (!legacyKeystorePath.isNullOrBlank() && file(legacyKeystorePath).isFile) {
-        listOf(signingConfigs.getByName("debug"), releaseSigningConfig).forEach { config ->
-            config.storeFile = file(legacyKeystorePath)
-            config.storePassword = signingProperty("qingyin.legacy.keystore.password") ?: ""
-            config.keyAlias = signingProperty("qingyin.legacy.keystore.alias") ?: "qingyin"
-            config.keyPassword = signingProperty("qingyin.legacy.key.password") ?: ""
-            config.storeType = "PKCS12"
-        }
+        // Debug 构建保留 Android 默认调试签名，避免 CI 和本地开发接触发布签名材料。
+        releaseSigningConfig.storeFile = file(legacyKeystorePath)
+        releaseSigningConfig.storePassword = signingProperty("qingyin.legacy.keystore.password") ?: ""
+        releaseSigningConfig.keyAlias = signingProperty("qingyin.legacy.keystore.alias") ?: "qingyin"
+        releaseSigningConfig.keyPassword = signingProperty("qingyin.legacy.key.password") ?: ""
+        releaseSigningConfig.storeType = "PKCS12"
     }
+    val enableR8 = providers.gradleProperty("enableR8")
+        .map { it.equals("true", ignoreCase = true) }
+        .getOrElse(false)
 
     buildTypes {
         release {
             signingConfig = releaseSigningConfig
-            isMinifyEnabled = false
+            // 先在 CI 或发布候选中通过 -PenableR8=true 启用，确认规则后再改为默认开启。
+            isMinifyEnabled = enableR8
+            isShrinkResources = enableR8
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+    }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
+        htmlReport = true
+        sarifReport = true
     }
 
     compileOptions {

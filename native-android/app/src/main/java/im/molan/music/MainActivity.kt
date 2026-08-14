@@ -1,11 +1,11 @@
 package im.molan.music
 
 import android.Manifest
-import android.app.Activity
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -37,7 +37,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -123,7 +122,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
 
     val overlayOpen = queueVisible || playerVisible || ncmLoginVisible || settingsVisible ||
         donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible
-    val activity = LocalContext.current as? Activity
+    val activity = LocalActivity.current
     val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
     // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
     BackHandler(enabled = !atRoot) {

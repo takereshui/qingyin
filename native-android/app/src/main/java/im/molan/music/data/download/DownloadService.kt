@@ -77,6 +77,8 @@ class DownloadService : Service() {
     }
 
     private fun createChannel() {
+        // 通知通道仅在 Android 8.0（API 26）及以上存在；较低版本仍可直接使用兼容通知。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "轻音下载", NotificationManager.IMPORTANCE_LOW)

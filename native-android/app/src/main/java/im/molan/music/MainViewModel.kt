@@ -21,6 +21,7 @@ import im.molan.music.data.network.QqRepository
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.data.lyrics.LrcParser
 import im.molan.music.data.lyrics.LyricsRepository
+import im.molan.music.data.match.LocalTrackMatchIndex
 import im.molan.music.data.match.TrackMatcher
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
@@ -64,11 +65,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _localTracks = MutableStateFlow<List<Track>>(emptyList())
     val localTracks: StateFlow<List<Track>> = _localTracks.asStateFlow()
-    /** 统一歌曲匹配的内存索引：下载音源优先于普通本地扫描结果。 */
-    private var localMatchIndex: Map<String, List<Track>> = emptyMap()
-    /** 本地音源索引每次刷新后清空；同一线上歌曲在列表重组期间只评分一次。 */
-    private val localMatchCache = mutableMapOf<String, TrackMatcher.Result>()
-    private val localNoMatchCache = mutableSetOf<String>()
+    /** 统一歌曲匹配索引：下载音源优先于普通本地扫描结果。 */
+    private val localMatchIndex = LocalTrackMatchIndex()
 
     private val _scanMessage = MutableStateFlow("等待扫描本地音乐")
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
@@ -714,17 +712,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val candidates = localPlaybackCandidates()
         val generation = ++matchIndexGeneration
         viewModelScope.launch(Dispatchers.Default) {
-            val built = candidates
-                .flatMap { candidate -> TrackMatcher.indexKeys(candidate).map { key -> key to candidate } }
-                .groupBy({ it.first }, { it.second })
             // 期间又有更新的重建请求：丢弃本次，防止旧 job 后完成覆盖新索引。
             if (generation != matchIndexGeneration) return@launch
-            // 读取侧（findLocalMatch）与写入侧都在同一把锁内，替换原子可见。
-            synchronized(localMatchCache) {
-                localMatchIndex = built
-                localMatchCache.clear()
-                localNoMatchCache.clear()
-            }
+            // 索引替换与正、负匹配缓存清理由独立组件原子完成。
+            localMatchIndex.replace(candidates)
             _localMatchFlags.value = emptyMap()
             // 索引就绪后按当前展示列表回补匹配标志。
             refreshShownMatchFlags()
@@ -756,23 +747,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _playlistDetail.value?.tracks?.let(::precomputeMatchFlags)
     }
 
-    private fun findLocalMatch(remote: Track): TrackMatcher.Result? = synchronized(localMatchCache) {
-        val cacheKey = "${remote.source.name}:${remote.id}"
-        localMatchCache[cacheKey]?.let { return@synchronized it }
-        if (cacheKey in localNoMatchCache) return@synchronized null
-        val candidates = TrackMatcher.indexKeys(remote)
-            .flatMap { key -> localMatchIndex[key].orEmpty() }
-            .distinctBy { it.id }
-        // 候选键未命中时直接判为未匹配：不再把每首线上歌曲与整个本地库做 Levenshtein
-        // 全量评分。这样扫描后展示线上列表不会产生 O(线上曲目×本地曲目) 的 CPU 峰值。
-        if (candidates.isEmpty()) {
-            localNoMatchCache += cacheKey
-            return@synchronized null
-        }
-        val result = TrackMatcher.findBest(remote, candidates)
-        if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
-        result
-    }
+    private fun findLocalMatch(remote: Track): TrackMatcher.Result? = localMatchIndex.find(remote)
 
     /** 仅供播放决策等点击路径使用；列表展示一律查询 localMatchFlags。 */
     fun hasLocalMatch(track: Track): Boolean =

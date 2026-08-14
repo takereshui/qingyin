@@ -68,6 +68,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -398,7 +399,7 @@ private fun PlaybackControlPanel(
 ) {
     val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
     val duration = maxOf(snapshot.durationMs, current.durationMs, 1L)
-    var sliderValue by remember(current.id) { mutableStateOf(0f) }
+    var sliderValue by remember(current.id) { mutableFloatStateOf(0f) }
     var isSeeking by remember(current.id) { mutableStateOf(false) }
     LaunchedEffect(snapshot.positionMs, duration, isSeeking) {
         if (!isSeeking) sliderValue = (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)

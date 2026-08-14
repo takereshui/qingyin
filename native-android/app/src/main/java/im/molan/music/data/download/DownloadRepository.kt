@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import org.jaudiotagger.audio.AudioFileIO
@@ -77,6 +78,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queueLimit = Semaphore(3)
     private val stateLock = Any()
+    private val statePersistencePolicy = DownloadStatePersistencePolicy()
     private val nextId = AtomicLong(System.currentTimeMillis())
     /** 前台服务启停只按“任务活跃/空闲”边界触发，避免下载进度刷新时反复拉起。 */
     private var serviceActive = false
@@ -398,7 +400,13 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                             downloaded += count
                             if (downloaded - lastReported >= 512 * 1024L || (total > 0L && downloaded == total)) {
                                 lastReported = downloaded
-                                updateTask(id) { it.copy(status = DownloadEntry.Status.DOWNLOADING, bytesDownloaded = downloaded, totalBytes = total) }
+                                updateTask(id, TaskUpdatePersistence.PROGRESS) {
+                                    it.copy(
+                                        status = DownloadEntry.Status.DOWNLOADING,
+                                        bytesDownloaded = downloaded,
+                                        totalBytes = total,
+                                    )
+                                }
                             }
                         }
                         buffered.flush()
@@ -561,17 +569,42 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         else -> "audio/mpeg"
     }
 
-    private fun updateTask(task: Task) = synchronized(stateLock) {
+    private enum class TaskUpdatePersistence {
+        /** 入队、状态切换、错误和完成结果必须立即落盘，以确保可恢复性。 */
+        IMMEDIATE,
+        /** 下载中的字节变化只节流写盘；UI 仍会即时收到新的进度。 */
+        PROGRESS,
+    }
+
+    private fun updateTask(
+        task: Task,
+        persistence: TaskUpdatePersistence = TaskUpdatePersistence.IMMEDIATE,
+    ) = synchronized(stateLock) {
         _tasks.value = _tasks.value.map { if (it.id == task.id) task else it }
-        persistLocked()
+        flushStateLocked(persistence)
     }
 
-    private fun updateTask(id: Long, transform: (Task) -> Task) = synchronized(stateLock) {
+    private fun updateTask(
+        id: Long,
+        persistence: TaskUpdatePersistence = TaskUpdatePersistence.IMMEDIATE,
+        transform: (Task) -> Task,
+    ) = synchronized(stateLock) {
         _tasks.value = _tasks.value.map { if (it.id == id) transform(it) else it }
-        persistLocked()
+        flushStateLocked(persistence)
     }
 
-    private fun persistLocked() {
+    private fun persistLocked() = flushStateLocked(TaskUpdatePersistence.IMMEDIATE)
+
+    private fun flushStateLocked(persistence: TaskUpdatePersistence) {
+        val shouldWrite = persistence == TaskUpdatePersistence.IMMEDIATE ||
+            statePersistencePolicy.shouldPersistProgress(SystemClock.elapsedRealtime())
+        if (shouldWrite) writeStateLocked()
+        publishEntriesLocked()
+        // 进度刷新不会改变前台服务是否存活，避免每 512 KB 向主线程重复投递检查任务。
+        if (persistence == TaskUpdatePersistence.IMMEDIATE) syncForegroundService()
+    }
+
+    private fun writeStateLocked() {
         runCatching {
             stateFile.writeText(JSONArray().apply {
                 _tasks.value.forEach { task ->
@@ -594,8 +627,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 }
             }.toString())
         }
+    }
+
+    private fun publishEntriesLocked() {
         _taskEntries.value = _tasks.value.map(Task::toEntry).sortedByDescending(DownloadEntry::id)
-        syncForegroundService()
     }
 
     /** 有活跃任务就拉起前台服务保活；任务全部结束就撤掉。只在边界触发。
