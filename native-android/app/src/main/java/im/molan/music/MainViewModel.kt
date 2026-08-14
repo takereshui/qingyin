@@ -192,7 +192,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val roots = settings.value.customFolderUris
                 // 上次索引（含冷启动载入的落盘缓存）作为增量基准，uri 未变的音轨直接复用。
                 val previous = (_localTracks.value + _downloadedTracks.value)
-                    .filter { !it.uri.isNullOrBlank() }
+                    .filter { it.uri != null }
                     .distinctBy { it.uri.toString() }
                     .associateBy { it.uri.toString() }
                 runCatching {
