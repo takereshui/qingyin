@@ -5,8 +5,10 @@ import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.util.Base64
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -58,6 +60,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -253,19 +256,44 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
     }
 
     Box(Modifier.fillMaxSize()) {
+        // 以当前曲目的封面铺满全屏；高斯模糊、暗角渐变和玻璃内容层保证歌词仍有稳定对比度。
         CoverBackdrop(current)
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.26f), MaterialTheme.colorScheme.background.copy(alpha = 0.88f)))))
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color.Black.copy(alpha = 0.34f),
+                        Color.Black.copy(alpha = 0.52f),
+                        Color.Black.copy(alpha = 0.74f),
+                    ),
+                ),
+            ),
+        )
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 18.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-                Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                    Text(current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(current.artist, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Surface(
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.42f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxSize()) {
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                    Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
+                        Text(current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(current.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(current.resolvedQuality?.label ?: current.resolvedQqQuality?.label ?: "在线播放", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 14.dp))
                 }
-                Text(current.resolvedQuality?.label ?: current.resolvedQqQuality?.label ?: "在线播放", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
             }
+            Spacer(Modifier.height(12.dp))
 
-            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.30f))
+                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(28.dp)),
+            ) { page ->
                 if (page == 0) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
@@ -340,6 +368,13 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                 }
             }
 
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.46f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             Slider(
                 value = sliderValue,
                 onValueChange = { sliderValue = it; isSeeking = true },
@@ -362,6 +397,8 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                 IconButton(onClick = model.playback::cycleMode, modifier = Modifier.size(52.dp)) { Icon(if (snapshot.playbackMode == PlaybackMode.SHUFFLE) Icons.Default.Shuffle else Icons.Default.Repeat, modeLabel(snapshot.playbackMode), Modifier.size(26.dp)) }
                 if (current.remoteUrl != null) IconButton(onClick = { model.enqueueDownload(current) }, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.Download, "按所选音质下载到 Music/轻音", Modifier.size(26.dp)) }
             }
+                }
+            }
         }
     }
 }
@@ -376,8 +413,8 @@ internal fun CoverBackdrop(track: Track) {
                 model = ImageRequest.Builder(context).data(source).size(960).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(42.dp),
-                alpha = 0.76f,
+                modifier = Modifier.fillMaxSize().blur(56.dp),
+                alpha = 0.94f,
             )
         }
     }

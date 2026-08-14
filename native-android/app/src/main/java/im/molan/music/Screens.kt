@@ -83,55 +83,54 @@ internal fun HomeScreen(
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.86f)),
-                shape = RoundedCornerShape(28.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             ) {
                 Box(Modifier.fillMaxWidth()) {
-                    // 柔化的莓紫与雾粉光晕，配合半透明容器形成克制的毛玻璃氛围。
+                    // 仅保留低对比的色彩层次；首页不再堆叠大面积光晕和多余动作按钮。
                     Box(
-                        Modifier.align(Alignment.TopEnd).size(132.dp)
-                            .blur(28.dp)
-                            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.68f), CircleShape),
-                    )
-                    Box(
-                        Modifier.align(Alignment.BottomStart).size(92.dp)
+                        Modifier.align(Alignment.TopEnd).size(104.dp)
                             .blur(24.dp)
-                            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f), CircleShape),
+                            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.48f), CircleShape),
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth()
-                            .background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f), MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f))))
-                            .padding(20.dp),
+                            .background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f), MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.18f))))
+                            .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                            Text("本地优先，在线随听", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f))
+                        Column(
+                            modifier = Modifier.weight(0.86f).clickable(onClick = onOpenLocal),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text("音乐，刚刚好", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text("${tracks.size} 首本地音乐 · 点此继续播放", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.76f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         if (selectedPlaylist == null) {
-                            FilledTonalButton(onClick = { playlistPickerVisible = true }) {
+                            FilledTonalButton(onClick = { playlistPickerVisible = true }, modifier = Modifier.height(42.dp)) {
                                 Icon(Icons.Default.LibraryMusic, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("选择歌单")
+                                Spacer(Modifier.width(5.dp))
+                                Text("添加歌单")
                             }
                         } else {
                             Card(
-                                modifier = Modifier.width(142.dp).border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), RoundedCornerShape(16.dp)).clickable { model.openPlaylist(selectedPlaylist) },
+                                modifier = Modifier.weight(1.14f).clickable { model.openPlaylist(selectedPlaylist) },
                                 shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.64f)),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
                             ) {
                                 Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    PlaylistCover(selectedPlaylist, Modifier.size(38.dp))
-                                    Column(Modifier.weight(1f)) {
+                                    PlaylistCover(selectedPlaylist, Modifier.size(42.dp))
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                        Text("首页歌单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                         Text(selectedPlaylist.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                                        Text("打开歌单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    IconButton(onClick = { playlistPickerVisible = true }, modifier = Modifier.size(30.dp)) {
+                                        Icon(Icons.Default.MoreVert, "更换首页歌单", Modifier.size(19.dp))
                                     }
                                 }
-                            }
-                            IconButton(onClick = { playlistPickerVisible = true }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Default.MoreVert, "更换首页歌单")
                             }
                         }
                     }
