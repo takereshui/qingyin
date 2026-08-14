@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import im.molan.music.data.download.DownloadRepository
 import im.molan.music.data.local.CustomFolderRepository
 import im.molan.music.data.local.LocalMusicRepository
+import im.molan.music.data.local.LocalMetadataRepairRepository
 import im.molan.music.data.network.DailyRepository
 import im.molan.music.data.network.NcmRepository
 import im.molan.music.data.network.PlaylistRepository
@@ -27,6 +28,7 @@ import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
+import im.molan.music.model.LocalMetadataIssue
 import im.molan.music.model.NcmQrLoginState
 import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlayerSnapshot
@@ -54,6 +56,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as QingyinApplication
     private val localRepository = LocalMusicRepository(application)
     private val customFolderRepository = CustomFolderRepository(application)
+    private val localMetadataRepairRepository = LocalMetadataRepairRepository(application)
     private val downloadRepository = app.downloadRepository
     private val ncmRepository = NcmRepository()
     private val dailyRepository = DailyRepository(application, ncmRepository)
@@ -70,6 +73,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _scanMessage = MutableStateFlow("等待扫描本地音乐")
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
+    private val _localMetadataIssues = MutableStateFlow<List<LocalMetadataIssue>>(emptyList())
+    /** 仅本地页面订阅：避免深度标签检查影响首页和播放页。 */
+    val localMetadataIssues: StateFlow<List<LocalMetadataIssue>> = _localMetadataIssues.asStateFlow()
+    private val _localMetadataRepairMessage = MutableStateFlow("")
+    val localMetadataRepairMessage: StateFlow<String> = _localMetadataRepairMessage.asStateFlow()
+    private val _localRepairWriteUris = MutableStateFlow<List<Uri>>(emptyList())
+    /** Android 11+ 需要由 Activity 发起系统写入授权。 */
+    val localRepairWriteUris: StateFlow<List<Uri>> = _localRepairWriteUris.asStateFlow()
+    private var pendingLocalMetadataRepairs: List<LocalMetadataIssue> = emptyList()
     private val _downloads = MutableStateFlow<List<DownloadEntry>>(emptyList())
     val downloads: StateFlow<List<DownloadEntry>> = _downloads.asStateFlow()
     private val _downloadedTracks = MutableStateFlow<List<Track>>(emptyList())
@@ -272,6 +284,120 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun hasMediaPermission(): Boolean = localRepository.canReadMedia()
 
+    /** 深度读取真实音频标签和内嵌图片，仅用户进入本地页并主动点击时执行。 */
+    fun scanLocalMetadataIssues() {
+        viewModelScope.launch {
+            val local = _localTracks.value
+            if (local.isEmpty()) {
+                _localMetadataIssues.value = emptyList()
+                _localMetadataRepairMessage.value = "请先扫描本地音乐"
+                return@launch
+            }
+            _localMetadataRepairMessage.value = "正在检查 ${local.size} 首本地音乐的标签与内嵌封面…"
+            runCatching { localMetadataRepairRepository.findIssues(local) }
+                .onSuccess { issues ->
+                    _localMetadataIssues.value = issues
+                    _localMetadataRepairMessage.value = if (issues.isEmpty()) {
+                        "本地音乐的标题、歌手、专辑和内嵌封面均已完整"
+                    } else {
+                        "发现 ${issues.size} 首缺失信息的音乐；请选择后再自动修复"
+                    }
+                }
+                .onFailure { error ->
+                    _localMetadataRepairMessage.value = "检查失败：${error.message ?: "无法读取本地标签"}"
+                }
+        }
+    }
+
+    /** 仅用户选中的问题曲目会被写入；Android 11+ 的系统媒体文件先请求一次性修改授权。 */
+    fun requestLocalMetadataRepair(issues: List<LocalMetadataIssue>) {
+        if (issues.isEmpty()) return
+        pendingLocalMetadataRepairs = issues.distinctBy { it.track.id }
+        val mediaUris = pendingLocalMetadataRepairs.mapNotNull { it.track.uri }
+            .filter { it.authority == MediaStore.AUTHORITY }
+            .distinct()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mediaUris.isNotEmpty()) {
+            _localMetadataRepairMessage.value = "请在系统弹窗中允许轻音修改所选 ${mediaUris.size} 个音频文件"
+            _localRepairWriteUris.value = mediaUris
+        } else {
+            performLocalMetadataRepair()
+        }
+    }
+
+    /** 由 Activity 在系统修改授权弹窗结束后回调。 */
+    fun onLocalMetadataWritePermissionResult(granted: Boolean) {
+        _localRepairWriteUris.value = emptyList()
+        if (!granted) {
+            pendingLocalMetadataRepairs = emptyList()
+            _localMetadataRepairMessage.value = "未获得写入授权，未修改任何本地文件"
+            return
+        }
+        performLocalMetadataRepair()
+    }
+
+    private fun performLocalMetadataRepair() {
+        val selected = pendingLocalMetadataRepairs
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            _localMetadataRepairMessage.value = "正在为 ${selected.size} 首所选音乐匹配原始信息…"
+            var repaired = 0
+            var unmatched = 0
+            var failed = 0
+            val repairedIds = mutableSetOf<String>()
+            selected.forEach { issue ->
+                val source = runCatching { findOriginalTrackForRepair(issue.track) }.getOrNull()
+                if (source == null) {
+                    unmatched++
+                    return@forEach
+                }
+                runCatching { localMetadataRepairRepository.repair(issue.track, source) }
+                    .onSuccess { repaired++; repairedIds += issue.track.id }
+                    .onFailure { failed++ }
+            }
+            pendingLocalMetadataRepairs = emptyList()
+            _localMetadataIssues.value = _localMetadataIssues.value.filterNot { issue -> issue.track.id in repairedIds }
+            _localMetadataRepairMessage.value = buildString {
+                append("已修复 $repaired 首")
+                if (unmatched > 0) append(" · $unmatched 首未找到可靠匹配")
+                if (failed > 0) append(" · $failed 首写入失败")
+                append("。已重新刷新本地音乐库")
+            }
+            // 重读 MediaStore/SAF 标签与封面，列表和播放页立刻使用新内嵌信息。
+            scanLocalMusic()
+            scanLocalMetadataIssues()
+        }
+    }
+
+    /**
+     * 先搜索网易云，只有未找到严格匹配时才查询 QQ。候选必须通过既有的标题、艺人、
+     * 文件名与时长门槛；不凭低分相似度写入本地文件。
+     */
+    private suspend fun findOriginalTrackForRepair(local: Track): Track? {
+        val keyword = TrackMatcher.searchKeys(local).firstOrNull()
+            ?: local.localFileName?.substringBeforeLast('.')?.trim().orEmpty()
+        if (keyword.length < 2) return null
+        val ncmCandidates = runCatching { ncmRepository.search(settings.value, keyword) }.getOrDefault(emptyList())
+        selectRepairCandidate(local, ncmCandidates)?.let { return it }
+        val qqCandidates = runCatching { qqRepository.search(settings.value, keyword) }.getOrDefault(emptyList())
+        return selectRepairCandidate(local, qqCandidates)
+    }
+
+    private fun selectRepairCandidate(local: Track, candidates: List<Track>): Track? = candidates
+        .asSequence()
+        .filter { it.artworkUri != null && it.title.isNotBlank() && it.artist.isNotBlank() && it.album.isNotBlank() }
+        .mapNotNull { candidate -> TrackMatcher.score(candidate, local)?.let { candidate to it } }
+        .filter { (_, result) -> isAcceptedRepairMatch(result) }
+        .maxByOrNull { (_, result) -> result.score }
+        ?.first
+
+    private fun isAcceptedRepairMatch(result: TrackMatcher.Result): Boolean = when (result.mode) {
+        TrackMatcher.MatchMode.TITLE_ARTIST_EXACT -> true
+        TrackMatcher.MatchMode.TITLE_EXACT -> result.score >= 88f && result.titleScore >= 99.5f
+        TrackMatcher.MatchMode.TITLE_VARIANT -> result.score >= 84f && result.titleScore >= 92f && (result.artistScore ?: 0f) >= 70f
+        TrackMatcher.MatchMode.FILE_NAME -> result.score >= 90f && result.titleScore >= 92f && (result.artistScore ?: 0f) >= 70f
+        TrackMatcher.MatchMode.FUZZY -> result.score >= TrackMatcher.ACCEPTANCE_SCORE && result.titleScore >= 90f && (result.artistScore ?: 0f) >= 70f
+    }
+
     fun refreshDownloads() {
         viewModelScope.launch {
             _downloadMessage.value = "正在读取轻音内置下载队列…"
@@ -307,7 +433,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addCustomFolder(uri: Uri) {
         runCatching {
-            getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
         }
         viewModelScope.launch {
             settingsRepository.update { current ->

@@ -1,14 +1,17 @@
 package im.molan.music
 
 import android.Manifest
+import android.app.Activity
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
@@ -60,10 +63,20 @@ private enum class AppTab(val title: String) { HOME("首页"), SEARCH("搜索"),
 
 @Composable
 private fun QingyinApp(model: MainViewModel = viewModel()) {
+    val activity = LocalActivity.current
     var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     val settings by model.settings.collectAsStateWithLifecycle()
     val tracks by model.localTracks.collectAsStateWithLifecycle()
     val scanMessage by model.scanMessage.collectAsStateWithLifecycle()
+    val localMetadataIssues = if (tab == AppTab.LOCAL) {
+        val value by model.localMetadataIssues.collectAsStateWithLifecycle()
+        value
+    } else emptyList()
+    val localMetadataRepairMessage = if (tab == AppTab.LOCAL) {
+        val value by model.localMetadataRepairMessage.collectAsStateWithLifecycle()
+        value
+    } else ""
+    val localRepairWriteUris by model.localRepairWriteUris.collectAsStateWithLifecycle()
     // 应用外壳不再订阅 500ms 进度，避免播放时整页界面持续重组。
     val chromePlayer by model.playback.chromeSnapshot.collectAsStateWithLifecycle()
     val playbackError by model.playback.errorMessage.collectAsStateWithLifecycle()
@@ -115,6 +128,22 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val customFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let(model::scanCustomFolder)
     }
+    val localMetadataWritePermission = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        model.onLocalMetadataWritePermissionResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(localRepairWriteUris) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && localRepairWriteUris.isNotEmpty()) {
+            runCatching {
+                val pending = MediaStore.createWriteRequest(
+                    requireNotNull(activity) { "无法取得当前 Activity" }.contentResolver,
+                    localRepairWriteUris,
+                )
+                localMetadataWritePermission.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+            }.onFailure {
+                model.onLocalMetadataWritePermissionResult(false)
+            }
+        }
+    }
 
     val downloadFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let(model::setDownloadFolder)
@@ -122,7 +151,6 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
 
     val overlayOpen = queueVisible || playerVisible || ncmLoginVisible || settingsVisible ||
         donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible
-    val activity = LocalActivity.current
     val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
     // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
     BackHandler(enabled = !atRoot) {
@@ -198,7 +226,16 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                         )
                         AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, matchFlags, model)
                         AppTab.PLAYLISTS -> PlaylistHubScreen(homePlaylists, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
-                        AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
+                        AppTab.LOCAL -> LocalScreen(
+                            tracks = tracks,
+                            folderUris = settings.customFolderUris,
+                            message = scanMessage,
+                            metadataIssues = localMetadataIssues,
+                            metadataRepairMessage = localMetadataRepairMessage,
+                            model = model,
+                            onRequestPermission = { mediaPermission.launch(permission) },
+                            onPickFolder = { customFolder.launch(null) },
+                        )
                         AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, settings.downloadFolderUri, downloadMessage, model, onPickFolder = { downloadFolder.launch(null) }, onClearFolder = model::clearDownloadFolder)
                         AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                     }

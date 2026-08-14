@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -45,6 +46,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
+import im.molan.music.model.LocalMetadataIssue
 import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
@@ -256,13 +259,31 @@ internal fun QuickCard(
 }
 
 @Composable
-internal fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message: String, model: MainViewModel, onRequestPermission: () -> Unit, onPickFolder: () -> Unit) {
+internal fun LocalScreen(
+    tracks: List<Track>,
+    folderUris: List<String>,
+    message: String,
+    metadataIssues: List<LocalMetadataIssue>,
+    metadataRepairMessage: String,
+    model: MainViewModel,
+    onRequestPermission: () -> Unit,
+    onPickFolder: () -> Unit,
+) {
+    var repairDialogVisible by remember { mutableStateOf(false) }
+    var selectedIssueIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(repairDialogVisible) {
+        if (repairDialogVisible) model.scanLocalMetadataIssues()
+    }
+    LaunchedEffect(metadataIssues) {
+        if (repairDialogVisible && selectedIssueIds.isEmpty()) selectedIssueIds = metadataIssues.map { it.track.id }.toSet()
+    }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) { Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilledTonalButton(onClick = onPickFolder) { Text("添加文件夹") }
+                    FilledTonalButton(onClick = { repairDialogVisible = true }) { Text("修复信息") }
                     FilledTonalButton(onClick = { model.scanLocalMusic() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描") }
                 }
             }
@@ -283,6 +304,61 @@ internal fun LocalScreen(tracks: List<Track>, folderUris: List<String>, message:
         }
         if (tracks.isEmpty()) item { EmptyHint("轻音只扫描系统媒体库或你选择的文件夹，不导入或复制你的文件。") }
         else items(tracks, key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
+    }
+    if (repairDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { repairDialogVisible = false },
+            title = { Text("本地音乐信息修复") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (metadataRepairMessage.isBlank()) "正在检查音频文件的真实标签与内嵌封面…" else metadataRepairMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text("仅对所选文件写入。轻音会先请求系统写入授权，再以严格匹配到的原始歌曲信息补齐标题、歌手、专辑和内嵌封面。", style = MaterialTheme.typography.bodySmall)
+                    if (metadataIssues.isNotEmpty()) {
+                        TextButton(onClick = {
+                            selectedIssueIds = if (selectedIssueIds.size == metadataIssues.size) emptySet() else metadataIssues.map { it.track.id }.toSet()
+                        }) { Text(if (selectedIssueIds.size == metadataIssues.size) "取消全选" else "全选") }
+                        LazyColumn(Modifier.height(300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(metadataIssues, key = { it.track.id }) { issue ->
+                                val selected = issue.track.id in selectedIssueIds
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        selectedIssueIds = if (selected) selectedIssueIds - issue.track.id else selectedIssueIds + issue.track.id
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow),
+                                ) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Checkbox(checked = selected, onCheckedChange = { checked ->
+                                            selectedIssueIds = if (checked) selectedIssueIds + issue.track.id else selectedIssueIds - issue.track.id
+                                        })
+                                        Column(Modifier.weight(1f)) {
+                                            Text(issue.track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                                            Text(issue.track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("缺少：${issue.summary}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = metadataIssues.isNotEmpty() && selectedIssueIds.isNotEmpty(),
+                    onClick = {
+                        val selected = metadataIssues.filter { it.track.id in selectedIssueIds }
+                        repairDialogVisible = false
+                        model.requestLocalMetadataRepair(selected)
+                    },
+                ) { Text("修复 ${selectedIssueIds.size} 首") }
+            },
+            dismissButton = { TextButton(onClick = { repairDialogVisible = false }) { Text("取消") } },
+        )
     }
 }
 

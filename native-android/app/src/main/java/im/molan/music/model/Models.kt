@@ -35,6 +35,23 @@ data class LyricLine(
     val translation: String? = null,
 )
 
+data class LocalMetadataIssue(
+    val track: Track,
+    val missingTitle: Boolean,
+    val missingArtist: Boolean,
+    val missingAlbum: Boolean,
+    /** 仅检测音频文件内嵌封面，系统专辑图不视为已写入封面。 */
+    val missingArtwork: Boolean,
+) {
+    val summary: String
+        get() = buildList {
+            if (missingTitle) add("标题")
+            if (missingArtist) add("歌手")
+            if (missingAlbum) add("专辑")
+            if (missingArtwork) add("内嵌封面")
+        }.joinToString(" · ")
+}
+
 data class DownloadEntry(
     val id: Long,
     val title: String,
