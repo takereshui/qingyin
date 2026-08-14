@@ -22,9 +22,15 @@ class CustomFolderRepository(private val context: Context) {
         walk(root, 0, maxDepth, files)
         // 只提取新出现的文件，已缓存的音轨（时长/标签）直接复用，重启与重复扫描零 retriever 开销。
         val toExtract = files.filter { "saf:${it.uri}" !in previous }
-        val newTracks = toExtract.map { file ->
-            async { metadataSemaphore.withPermit { file.toTrack() } }
-        }.awaitAll()
+        // 大目录不能为每个文件同时创建协程；按小批次调度，既保持 4 路元数据提取，
+        // 又避免数千文件时的协程分配、队列和内存抖动。
+        val newTracks = buildList {
+            toExtract.chunked(16).forEach { batch ->
+                addAll(batch.map { file ->
+                    async { metadataSemaphore.withPermit { file.toTrack() } }
+                }.awaitAll())
+            }
+        }
         val kept = files.mapNotNull { file -> previous["saf:${file.uri}"] }
         (kept + newTracks).sortedWith(compareBy<Track> { it.title.lowercase() }.thenBy { it.artist.lowercase() })
     }

@@ -131,7 +131,7 @@ internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackEr
         }
         item {
             Text(
-                if (source == Track.Source.QQ) "QQ 使用 ChKSz API 与独立 QQ 音质档位；请先在设置中填写 API Key。" else "网易云使用 NCMC 与网易云独立音质档位。",
+                if (source == Track.Source.QQ) "QQ 使用 ChKSz API 与独立 QQ 音质档位；请先在设置中填写 API Key。" else "网易云音源使用 ChKSz API 与独立网易云音质档位；NCMC 仅提供搜索、歌单和歌词等数据服务。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

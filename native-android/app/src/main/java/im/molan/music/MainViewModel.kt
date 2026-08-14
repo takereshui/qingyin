@@ -143,7 +143,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val tracks = downloadRepository.downloadedTracks()
                     _downloadedTracks.value = tracks
                     rebuildLocalMatchIndex()
-                    refreshShownMatchFlags()
                     // 新下载已发布进系统媒体库：节流调度本地重扫，新歌尽快出现在本地页且不刷屏。
                     // 首次 emit 不调度——冷启动全量扫描由 MainActivity 启动流程兜底，避免重复整扫。
                     if (!firstEmission && tracks.isNotEmpty() && localRepository.canReadMedia()) scheduleLocalScan()
@@ -169,7 +168,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (cached.isEmpty()) return@launch
             _localTracks.value = cached
             rebuildLocalMatchIndex()
-            refreshShownMatchFlags()
             _scanMessage.value = "已载入上次扫描的 ${cached.size} 首本地音乐，正在后台刷新…"
         }
     }
@@ -196,16 +194,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .distinctBy { it.uri.toString() }
                     .associateBy { it.uri.toString() }
                 runCatching {
-                    val mediaTracks = if (localRepository.canReadMedia()) localRepository.scanMediaStore(previous) else emptyList()
-                    val customTracks = roots.flatMap { uri -> customFolderRepository.scan(Uri.parse(uri), previous) }
-                    (mediaTracks + customTracks).distinctBy { it.id }
+                    // MediaStore 与各个 SAF 目录彼此独立；并行扫描可缩短多目录用户的总等待时间。
+                    coroutineScope {
+                        val mediaTracks = async {
+                            if (localRepository.canReadMedia()) localRepository.scanMediaStore(previous) else emptyList()
+                        }
+                        val customTracks = roots.map { uri ->
+                            async { customFolderRepository.scan(Uri.parse(uri), previous) }
+                        }.awaitAll().flatten()
+                        (mediaTracks.await() + customTracks).distinctBy { it.id }
+                    }
                 }
                     .onSuccess { tracks ->
-                        _localTracks.value = tracks
-                        localRepository.saveIndex(tracks)
-                        rebuildLocalMatchIndex()
-                        refreshShownMatchFlags()
-                        _scanMessage.value = if (tracks.isEmpty()) "未发现可播放的本地音乐" else "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+                        // 无文件增删或元数据变化时，不重写整份 JSON、不重建匹配索引，也不重复全量评分。
+                        val changed = tracks != _localTracks.value
+                        if (changed) {
+                            _localTracks.value = tracks
+                            localRepository.saveIndex(tracks)
+                            rebuildLocalMatchIndex()
+                        }
+                        _scanMessage.value = when {
+                            tracks.isEmpty() -> "未发现可播放的本地音乐"
+                            changed -> "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+                            else -> "本地音乐无变化 · 共 ${tracks.size} 首"
+                        }
                     }
                     .onFailure { error -> _scanMessage.value = "扫描失败：${error.message ?: "本地目录不可用"}" }
             } catch (_: Throwable) {
