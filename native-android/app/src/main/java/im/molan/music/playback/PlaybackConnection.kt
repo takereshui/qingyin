@@ -24,8 +24,12 @@ import kotlinx.coroutines.launch
 class PlaybackConnection(context: Context) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /** 全量快照仅供进度条、歌词和播放器弹窗订阅，位置每 500ms 更新一次。 */
     private val _snapshot = MutableStateFlow(PlayerSnapshot())
     val snapshot: StateFlow<PlayerSnapshot> = _snapshot.asStateFlow()
+    /** 应用外壳只关心曲目、队列和播放状态，不订阅高频 position，避免整页重组。 */
+    private val _chromeSnapshot = MutableStateFlow(PlayerSnapshot())
+    val chromeSnapshot: StateFlow<PlayerSnapshot> = _chromeSnapshot.asStateFlow()
     private val _errorMessage = MutableStateFlow("")
     val errorMessage: StateFlow<String> = _errorMessage.asStateFlow()
     private var controller: MediaController? = null
@@ -240,5 +244,7 @@ class PlaybackConnection(context: Context) {
         if (previous != null && previous == snapshot) return
         lastPublished = snapshot
         _snapshot.value = snapshot
+        // MutableStateFlow 只在值变化时发射；位置归零后，常态 500ms 更新不会影响应用外壳。
+        _chromeSnapshot.value = snapshot.copy(positionMs = 0L)
     }
 }

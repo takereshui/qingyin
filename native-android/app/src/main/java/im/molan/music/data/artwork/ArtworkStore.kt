@@ -6,6 +6,8 @@ import im.molan.music.data.db.ArtworkDao
 import im.molan.music.data.db.ArtworkEntity
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -18,6 +20,8 @@ import java.security.MessageDigest
 class ArtworkStore(context: Context, private val dao: ArtworkDao) {
     private val appContext = context.applicationContext
     private val coversDir = File(appContext.filesDir, "covers").apply { mkdirs() }
+    /** MediaMetadataRetriever 初始化开销较高；列表首屏只允许少量解析并行执行。 */
+    private val embeddedArtworkPermits = Semaphore(permits = 2)
 
     fun fileFor(url: String): File = File(coversDir, sha256(url).take(24) + ".jpg")
 
@@ -37,11 +41,15 @@ class ArtworkStore(context: Context, private val dao: ArtworkDao) {
         val uri = track.uri ?: return@withContext null
         val key = "embedded:${track.id}"
         dao.byUrl(key)?.filePath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }?.let { return@withContext it }
-        val bytes = extractEmbeddedPicture(uri) ?: return@withContext null
-        val file = File(coversDir, sha256(key).take(24) + ".jpg")
-        runCatching { if (!file.isFile) file.writeBytes(bytes) }
-        dao.upsert(ArtworkEntity(url = key, filePath = file.absolutePath, updatedAt = System.currentTimeMillis()))
-        file.takeIf { it.isFile && it.length() > 0L }
+        embeddedArtworkPermits.withPermit {
+            // 等待期间可能已有其他列表项完成相同资源的缓存，避免重复解码。
+            dao.byUrl(key)?.filePath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }?.let { return@withPermit it }
+            val bytes = extractEmbeddedPicture(uri) ?: return@withPermit null
+            val file = File(coversDir, sha256(key).take(24) + ".jpg")
+            runCatching { if (!file.isFile) file.writeBytes(bytes) }
+            dao.upsert(ArtworkEntity(url = key, filePath = file.absolutePath, updatedAt = System.currentTimeMillis()))
+            file.takeIf { it.isFile && it.length() > 0L }
+        }
     }
 
     private fun extractEmbeddedPicture(uri: android.net.Uri): ByteArray? {

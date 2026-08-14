@@ -64,7 +64,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val settings by model.settings.collectAsStateWithLifecycle()
     val tracks by model.localTracks.collectAsStateWithLifecycle()
     val scanMessage by model.scanMessage.collectAsStateWithLifecycle()
-    val player by model.playback.snapshot.collectAsStateWithLifecycle()
+    // 应用外壳不再订阅 500ms 进度，避免播放时整页界面持续重组。
+    val chromePlayer by model.playback.chromeSnapshot.collectAsStateWithLifecycle()
     val playbackError by model.playback.errorMessage.collectAsStateWithLifecycle()
     val searchTracks by model.searchTracks.collectAsStateWithLifecycle()
     val dailyTracks by model.dailyTracks.collectAsStateWithLifecycle()
@@ -149,7 +150,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             bottomBar = {
                 Column {
-                    if (player.current != null) MiniPlayer(player, model, onQueue = { queueVisible = true }, onOpen = { playerVisible = true })
+                    if (chromePlayer.current != null) MiniPlayer(chromePlayer, model, onQueue = { queueVisible = true }, onOpen = { playerVisible = true })
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f),
                         tonalElevation = 0.dp,
@@ -195,7 +196,6 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                 }
                 if (queueVisible) {
                     QueueDialog(
-                        snapshot = player,
                         model = model,
                         modifier = Modifier.align(Alignment.BottomCenter),
                         onDismiss = { queueVisible = false },
@@ -203,7 +203,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                 }
             }
         }
-        if (playerVisible) FullPlayerDialog(player, lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
+        if (playerVisible) FullPlayerDialog(lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
         if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, cacheSpaceBytes = model.onlineCacheSpace, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false }, onClearCache = model::clearOnlineCache)
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })

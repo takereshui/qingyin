@@ -2,8 +2,13 @@ package im.molan.music
 
 import android.app.Application
 import android.content.Intent
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import im.molan.music.data.download.DownloadRepository
@@ -127,6 +132,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         observePlaybackNetworkErrors()
         loadLocalPlaylists()
         loadLocalMusicIndex()
+        observeMediaStoreChanges()
     }
 
     private fun observeInternalDownloads() {
@@ -176,18 +182,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val scanGate = Mutex()
     /** 上次扫描真正结束的时刻，自动重扫以它做节流基准，避免下载完成后又立刻整库重扫。 */
     private var lastScanDoneAt = 0L
+    private var mediaStoreRefreshJob: Job? = null
+    /** 参考 APlayer：合并 MediaStore 的连续 insert/update/delete，避免下载时触发多轮整扫。 */
+    private val mediaStoreObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean, uri: Uri?) {
+            if (!selfChange && uri != null) scheduleMediaStoreRefresh()
+        }
+    }
+
+    private fun observeMediaStoreChanges() {
+        runCatching {
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            } else {
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            }
+            getApplication<Application>().contentResolver.registerContentObserver(collection, true, mediaStoreObserver)
+        }
+    }
+
+    private fun scheduleMediaStoreRefresh() {
+        mediaStoreRefreshJob?.cancel()
+        mediaStoreRefreshJob = viewModelScope.launch {
+            delay(800)
+            // 仅系统媒体库发生变化；SAF 自定义目录保持现有索引，避免无关的全树遍历。
+            scanLocalMusic(includeCustomFolders = false)
+        }
+    }
 
     /**
      * 全量扫描本地音乐（MediaStore + 自定义目录）并落盘索引。
      * 单飞原则：扫描期间任何新请求（启动、授权回调、目录恢复、下载完成、手动按钮）
      * 都不再叠加扫描，直接忽略；结果与上次索引做增量，只对新增文件提取元数据。
      */
-    fun scanLocalMusic() {
+    fun scanLocalMusic(includeCustomFolders: Boolean = true) {
         viewModelScope.launch {
             if (!scanGate.tryLock()) return@launch
             try {
                 _scanMessage.value = "正在扫描本地音乐目录…"
-                val roots = settings.value.customFolderUris
+                val roots = if (includeCustomFolders) settings.value.customFolderUris else emptyList()
+                val retainedCustomTracks = if (includeCustomFolders) emptyList() else _localTracks.value.filter { it.id.startsWith("saf:") }
                 // 上次索引（含冷启动载入的落盘缓存）作为增量基准，uri 未变的音轨直接复用。
                 val previous = (_localTracks.value + _downloadedTracks.value)
                     .filter { it.uri != null }
@@ -202,7 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val customTracks = roots.map { uri ->
                             async { customFolderRepository.scan(Uri.parse(uri), previous) }
                         }.awaitAll().flatten()
-                        (mediaTracks.await() + customTracks).distinctBy { it.id }
+                        (mediaTracks.await() + customTracks + retainedCustomTracks).distinctBy { it.id }
                     }
                 }
                     .onSuccess { tracks ->
@@ -215,7 +249,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         _scanMessage.value = when {
                             tracks.isEmpty() -> "未发现可播放的本地音乐"
-                            changed -> "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+                            changed && includeCustomFolders -> "已扫描 ${tracks.size} 首本地音乐 · ${roots.size} 个自定义目录"
+                            changed -> "已刷新系统媒体库 · 共 ${tracks.size} 首本地音乐"
                             else -> "本地音乐无变化 · 共 ${tracks.size} 首"
                         }
                     }
@@ -229,10 +264,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 自动触发的本地重扫（下载完成/结构变化）：距上次扫描结束 10 秒内不重复整扫。 */
+    /** 下载完成时仅刷新 MediaStore；实际变化由 ContentObserver 合并后再执行。 */
     private fun scheduleLocalScan() {
         if (SystemClock.elapsedRealtime() - lastScanDoneAt < 10_000L) return
-        scanLocalMusic()
+        scheduleMediaStoreRefresh()
     }
 
     fun hasMediaPermission(): Boolean = localRepository.canReadMedia()
@@ -725,12 +760,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val cacheKey = "${remote.source.name}:${remote.id}"
         localMatchCache[cacheKey]?.let { return@synchronized it }
         if (cacheKey in localNoMatchCache) return@synchronized null
-        val indexed = TrackMatcher.indexKeys(remote)
+        val candidates = TrackMatcher.indexKeys(remote)
             .flatMap { key -> localMatchIndex[key].orEmpty() }
             .distinctBy { it.id }
-        // 索引键用于快速筛选；若因版本标签、文件名格式或元数据差异没有共同键，
-        // 再对全部本地候选执行一次带严格门槛的评分，避免合法歌曲被直接漏掉。
-        val candidates = if (indexed.isNotEmpty()) indexed else localPlaybackCandidates()
+        // 候选键未命中时直接判为未匹配：不再把每首线上歌曲与整个本地库做 Levenshtein
+        // 全量评分。这样扫描后展示线上列表不会产生 O(线上曲目×本地曲目) 的 CPU 峰值。
+        if (candidates.isEmpty()) {
+            localNoMatchCache += cacheKey
+            return@synchronized null
+        }
         val result = TrackMatcher.findBest(remote, candidates)
         if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
         result
@@ -1057,6 +1095,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        runCatching { getApplication<Application>().contentResolver.unregisterContentObserver(mediaStoreObserver) }
+        mediaStoreRefreshJob?.cancel()
         qrLoginJob?.cancel()
         playback.release()
         super.onCleared()

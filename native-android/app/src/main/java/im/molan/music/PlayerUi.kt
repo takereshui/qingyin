@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import im.molan.music.model.AppSettings
@@ -116,26 +117,31 @@ internal fun MiniPlayer(snapshot: PlayerSnapshot, model: MainViewModel, onQueue:
             IconButton(onClick = model.playback::next, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(28.dp)) }
             IconButton(onClick = onQueue, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "播放队列", Modifier.size(25.dp)) }
         }
-        val progress = (snapshot.positionMs.toFloat() / maxOf(snapshot.durationMs, current.durationMs, 1L).toFloat()).coerceIn(0f, 1f)
-        Box(
-            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 7.dp, end = 4.dp).height(4.dp)
-                .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-        ) {
-            Box(
-                modifier = Modifier.fillMaxWidth(progress).fillMaxSize()
-                    .background(MaterialTheme.colorScheme.primary),
-            )
-        }
+        MiniPlayerProgress(model)
+    }
+}
+
+/** 仅进度条订阅 500ms 位置快照，防止迷你播放器以上的应用外壳随进度重组。 */
+@Composable
+private fun MiniPlayerProgress(model: MainViewModel) {
+    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
+    val current = snapshot.current ?: return
+    val progress = (snapshot.positionMs.toFloat() / maxOf(snapshot.durationMs, current.durationMs, 1L).toFloat()).coerceIn(0f, 1f)
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 7.dp, end = 4.dp).height(4.dp)
+            .clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(progress).fillMaxSize().background(MaterialTheme.colorScheme.primary))
     }
 }
 
 @Composable
 internal fun QueueDialog(
-    snapshot: PlayerSnapshot,
     model: MainViewModel,
     modifier: Modifier = Modifier,
     onDismiss: () -> Unit,
 ) {
+    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -215,7 +221,8 @@ internal fun NcmQrLoginDialog(state: NcmQrLoginState, onDismiss: () -> Unit, onR
 }
 
 @Composable
-internal fun FullPlayerDialog(snapshot: PlayerSnapshot, lyrics: List<LyricLine>, playbackError: String, downloadActionMessage: String, model: MainViewModel, onDismiss: () -> Unit) {
+internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, downloadActionMessage: String, model: MainViewModel, onDismiss: () -> Unit) {
+    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
     val current = snapshot.current ?: return
     val duration = maxOf(snapshot.durationMs, current.durationMs, 1L)
     val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
