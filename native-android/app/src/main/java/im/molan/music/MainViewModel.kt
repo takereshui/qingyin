@@ -691,13 +691,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val indexed = TrackMatcher.indexKeys(remote)
             .flatMap { key -> localMatchIndex[key].orEmpty() }
             .distinctBy { it.id }
-        // 索引没有共同的规范标题键或艺人标题键即视为不匹配；不再全量评分，
-        // 避免名称无关的歌曲因短字符串、时长或偶然元数据而被错误标为“本地”。
-        if (indexed.isEmpty()) {
-            localNoMatchCache += cacheKey
-            return@synchronized null
-        }
-        val result = TrackMatcher.findBest(remote, indexed)
+        // 索引键用于快速筛选；若因版本标签、文件名格式或元数据差异没有共同键，
+        // 再对全部本地候选执行一次带严格门槛的评分，避免合法歌曲被直接漏掉。
+        val candidates = if (indexed.isNotEmpty()) indexed else localPlaybackCandidates()
+        val result = TrackMatcher.findBest(remote, candidates)
         if (result == null) localNoMatchCache += cacheKey else localMatchCache[cacheKey] = result
         result
     }

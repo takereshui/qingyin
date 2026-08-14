@@ -93,16 +93,30 @@ class NcmRepository(
         val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
 
         if (hasValidUrl && !isExpired) {
-            // 无论播放还是下载：只有缓存音质与当前目标音质一致（或未知音质）才复用。
-            if (track.resolvedQuality == null || track.resolvedQuality == target) return@withContext track
+            // 下载不能复用音质未知的试听地址，否则会把试听音质误当成下载音质。
+            val qualityMatches = track.resolvedQuality == target || (!isDownload && track.resolvedQuality == null)
+            if (qualityMatches) return@withContext track
         }
 
         val id = track.id.removePrefix("ncm:")
         val hasCookie = settings.ncmCookie.isNotBlank()
         val hasChksz = settings.chkszApiKey.isNotBlank()
 
+        // 下载优先使用用户配置的 ChKSz 私有 API，并且只请求用户选择的目标音质。
+        // 只有私有 API 未返回该档位地址时，才回退到已登录的 NCMC 线路。
+        if (isDownload && hasChksz) {
+            chkszFallbackUrl(settings, id, target, allowDowngrade = false)?.let { privateUrl ->
+                return@withContext track.copy(
+                    remoteUrl = privateUrl,
+                    resolvedQuality = target,
+                    audioExtension = privateUrl.substringBefore('?').substringAfterLast('.', "mp3"),
+                    resolvedAt = System.currentTimeMillis(),
+                )
+            }
+        }
+
         if (!hasCookie) {
-            chkszFallbackUrl(settings, id, target)?.let { fallbackUrl ->
+            chkszFallbackUrl(settings, id, target, allowDowngrade = !isDownload)?.let { fallbackUrl ->
                 return@withContext track.copy(
                     remoteUrl = fallbackUrl,
                     resolvedQuality = null,
@@ -124,7 +138,7 @@ class NcmRepository(
             AppSettings.Quality.HIGH,
             AppSettings.Quality.STANDARD,
         )
-        val levels = qualityOrder.dropWhile { it != target }
+        val levels = if (isDownload) listOf(target) else qualityOrder.dropWhile { it != target }
 
         var lastError = "网易云未返回可用播放地址（cookie 可能过期或无该音质权益）"
         for (requested in levels) {
@@ -149,7 +163,7 @@ class NcmRepository(
             )
         }
 
-        chkszFallbackUrl(settings, id, target)?.let { fallbackUrl ->
+        chkszFallbackUrl(settings, id, target, allowDowngrade = !isDownload)?.let { fallbackUrl ->
             return@withContext track.copy(
                 remoteUrl = fallbackUrl,
                 resolvedQuality = null,
@@ -161,7 +175,7 @@ class NcmRepository(
         error(
             when {
                 isDownload && !hasChksz ->
-                    "网易云未提供“${target.label}”下载地址；可调低音质、检查登录，或配置 ChKSz 兜底"
+                    "ChKSz 与当前 NCMC 均未提供“${target.label}”下载地址；可调低音质、检查登录，或检查私有 API 配置"
                 !hasChksz ->
                     "$lastError；未配置 ChKSz 兜底"
                 else ->
@@ -188,14 +202,22 @@ class NcmRepository(
     }
 
     /** ChKSz 兜底：仅使用用户配置的私有主线路，必须携带 API Key；不再内置官方 top 域名备选。 */
-    private fun chkszFallbackUrl(settings: AppSettings, id: String, target: AppSettings.Quality): String? {
+    private fun chkszFallbackUrl(
+        settings: AppSettings,
+        id: String,
+        target: AppSettings.Quality,
+        allowDowngrade: Boolean,
+    ): String? {
         if (settings.chkszApiKey.isBlank()) return null
         val base = settings.chkszBaseUrl.trim().ifBlank { return null }.trimEnd('/').removeSuffix("/api").toHttpUrl()
         // ChKSz 不认 higher，映射为 exhigh；自目标起降级
         val targetLevel = target.wireValue.let { if (it == "higher") "exhigh" else it }
         val levelOrder = listOf("jymaster", "hires", "lossless", "exhigh", "standard")
-        val levels = (listOf(targetLevel) + levelOrder.dropWhile { it != targetLevel }.drop(1) + listOf("exhigh", "standard"))
-            .distinct()
+        val levels = if (allowDowngrade) {
+            (listOf(targetLevel) + levelOrder.dropWhile { it != targetLevel }.drop(1) + listOf("exhigh", "standard")).distinct()
+        } else {
+            listOf(targetLevel)
+        }
         for (level in levels) {
             val url = base.newBuilder().addPathSegments("api/163_music")
                 .addQueryParameter("id", id)

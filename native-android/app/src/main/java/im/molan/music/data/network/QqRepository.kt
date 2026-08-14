@@ -67,8 +67,9 @@ class QqRepository(
         val hasValidUrl = !url.isNullOrBlank() && (url.startsWith("https://") || url.startsWith("http://"))
 
         if (hasValidUrl && !isExpired) {
-            // 播放与下载一致：只有缓存音质与当前目标音质一致（或未知音质）才复用。
-            if (track.resolvedQqQuality == null || track.resolvedQqQuality == target) {
+            // 下载不能复用音质未知的试听地址，否则会把试听音质误当成下载音质。
+            val qualityMatches = track.resolvedQqQuality == target || (!isDownload && track.resolvedQqQuality == null)
+            if (qualityMatches) {
                 return@withContext ResolvedQqTrack(track, "") // 复用时不需要重新返回歌词
             }
         }
@@ -78,8 +79,11 @@ class QqRepository(
 
         // 播放与下载一致：先请求目标音质；失败则按 母带→Hi-Res→FLAC→320→128 降级，
         // 避免“所选音质不可用”时在线播放直接失败。
-        val sizes = listOf(target.wireValue) +
-            listOf("master", "hires", "flac", "320k", "128k").filterNot { it == target.wireValue }
+        val sizes = if (isDownload) {
+            listOf(target.wireValue)
+        } else {
+            listOf(target.wireValue) + listOf("master", "hires", "flac", "320k", "128k").filterNot { it == target.wireValue }
+        }
         var lastFailure = "QQ 未提供 ${target.label} 音源"
         for (size in sizes) {
             val payload = runCatching {

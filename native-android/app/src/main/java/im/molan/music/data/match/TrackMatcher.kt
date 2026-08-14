@@ -15,8 +15,8 @@ import kotlin.math.max
 object TrackMatcher {
     /** 常规模糊匹配仅作为严格的双信号兜底，不以低分相似度替代线上音源。 */
     const val ACCEPTANCE_SCORE = 68f
-    /** 时长差超过半秒即视为不同版本，不能触发本地优先播放。 */
-    private const val DURATION_TOLERANCE_MS = 500L
+    /** 编码器、封面片头和平台元数据可能造成小幅时长差；超过 3 秒才视为不同版本。 */
+    private const val DURATION_TOLERANCE_MS = 3_000L
 
     enum class MatchMode {
         TITLE_ARTIST_EXACT,

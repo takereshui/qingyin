@@ -613,7 +613,7 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
                 item { Text("QQ / ChKSz API", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
                 item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（必填）") }, singleLine = true) }
-                item { Text("QQ 搜索与网易云兜底均只走你配置的 ChKSz 主线路，必须填写 API Key；不再内置官方 top 域名备选。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("QQ 搜索与网易云下载会优先走你配置的 ChKSz 主线路，必须填写 API Key；私有 API 未返回目标音质时，网易云下载才回退到已登录的 NCMC。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = {
