@@ -236,7 +236,7 @@ object TrackMatcher {
 
     private fun similarity(a: String, b: String): Float {
         val longer = if (a.length >= b.length) a else b
-        val shorter = if (a.length >= b.length) a else b
+        val shorter = if (a.length >= b.length) b else a
         if (longer.isEmpty()) return 1f
         val previous = IntArray(shorter.length + 1) { it }
         val current = IntArray(shorter.length + 1)
