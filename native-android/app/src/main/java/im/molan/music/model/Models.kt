@@ -111,6 +111,8 @@ data class AppSettings(
     val ncmUserId: Long = 0L,
     /** 用户主动导入的公开歌单 ID；详情本身保存在歌单磁盘缓存中。 */
     val importedPlaylistIds: List<String> = emptyList(),
+    /** 首页横幅右侧显示的用户自选歌单；为空时显示“选择歌单”入口。 */
+    val homePlaylistId: String = "",
 ) {
     enum class Quality(val wireValue: String, val label: String) {
         STANDARD("standard", "标准 · 128K"),

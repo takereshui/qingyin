@@ -11,9 +11,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 
-private val Wine = Color(0xFF8C1636)
-private val WineDark = Color(0xFF5A0620)
-private val Rose = Color(0xFFFFD9E0)
+private val Wine = Color(0xFF9D1F45)
+private val WineDark = Color(0xFF541027)
+private val Berry = Color(0xFF6F3D59)
+private val Plum = Color(0xFF7B4267)
+private val Rose = Color(0xFFFFD9E3)
+private val Mist = Color(0xFFFFF6F8)
 
 /** 统一标题、列表和说明文字的字号与行高，避免页面间视觉密度不一致。 */
 val qingyinTypography = Typography(
@@ -42,20 +45,42 @@ fun lightWineScheme() = lightColorScheme(
     primary = Wine,
     onPrimary = Color.White,
     primaryContainer = Rose,
-    onPrimaryContainer = Color(0xFF3D0012),
-    secondary = Color(0xFF74565E),
-    background = Color(0xFFFFF8F8),
-    surface = Color(0xFFFFF8F8),
-    surfaceVariant = Color(0xFFF5E5E8),
+    onPrimaryContainer = Color(0xFF431021),
+    secondary = Berry,
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFF9DFE8),
+    onSecondaryContainer = Color(0xFF34101F),
+    tertiary = Plum,
+    tertiaryContainer = Color(0xFFF4DDEB),
+    onTertiaryContainer = Color(0xFF321126),
+    background = Mist,
+    onBackground = Color(0xFF24181C),
+    surface = Mist,
+    onSurface = Color(0xFF24181C),
+    surfaceVariant = Color(0xFFF3E5E9),
+    onSurfaceVariant = Color(0xFF514047),
+    outline = Color(0xFF8C707B),
+    outlineVariant = Color(0xFFE3CDD5),
 )
 
 fun darkWineScheme() = darkColorScheme(
-    primary = Color(0xFFFFB1C0),
-    onPrimary = Color(0xFF5B0020),
+    primary = Color(0xFFFFB1C3),
+    onPrimary = Color(0xFF650028),
     primaryContainer = WineDark,
     onPrimaryContainer = Rose,
-    secondary = Color(0xFFE3BDC5),
+    secondary = Color(0xFFEABACD),
+    onSecondary = Color(0xFF472133),
+    secondaryContainer = Color(0xFF5A3547),
+    onSecondaryContainer = Color(0xFFFFD9E6),
+    tertiary = Color(0xFFE9BDD9),
+    tertiaryContainer = Color(0xFF59364D),
+    onTertiaryContainer = Color(0xFFFFD8ED),
     background = Color(0xFF171114),
+    onBackground = Color(0xFFEEDFE3),
     surface = Color(0xFF171114),
-    surfaceVariant = Color(0xFF2A2023),
+    onSurface = Color(0xFFEEDFE3),
+    surfaceVariant = Color(0xFF302328),
+    onSurfaceVariant = Color(0xFFD6C0C8),
+    outline = Color(0xFFA38A93),
+    outlineVariant = Color(0xFF514048),
 )

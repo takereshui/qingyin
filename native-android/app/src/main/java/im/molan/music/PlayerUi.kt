@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Download
@@ -445,7 +446,12 @@ internal fun CachedCoverImage(url: String?, contentDescription: String, modifier
 }
 
 @Composable
-internal fun TrackRow(track: Track, matchedLocal: Boolean = false, onClick: () -> Unit) {
+internal fun TrackRow(
+    track: Track,
+    matchedLocal: Boolean = false,
+    onClick: () -> Unit,
+    onCollect: (() -> Unit)? = null,
+) {
     Row(
         Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
@@ -464,6 +470,11 @@ internal fun TrackRow(track: Track, matchedLocal: Boolean = false, onClick: () -
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(start = 8.dp, end = 2.dp)) {
                 Icon(Icons.Default.CheckCircle, "已识别本地音源", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                 Text("本地", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        onCollect?.let { collect ->
+            IconButton(onClick = collect, modifier = Modifier.size(42.dp)) {
+                Icon(Icons.Default.AddCircleOutline, "收藏到歌单", tint = MaterialTheme.colorScheme.primary)
             }
         }
     }

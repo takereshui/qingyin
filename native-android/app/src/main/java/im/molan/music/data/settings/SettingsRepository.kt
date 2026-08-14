@@ -22,6 +22,7 @@ class SettingsRepository(private val context: Context) {
         val streamQqQuality = stringPreferencesKey("stream_qq_quality")
         val cacheLimitBytes = longPreferencesKey("cache_limit_bytes")
         val importedPlaylists = stringPreferencesKey("imported_playlists")
+        val homePlaylistId = stringPreferencesKey("home_playlist_id")
         val ncmcBaseUrl = stringPreferencesKey("ncmc_base_url")
         val backupNcmcBaseUrl = stringPreferencesKey("backup_ncmc_base_url")
         val useBackupNcmc = booleanPreferencesKey("use_backup_ncmc")
@@ -62,6 +63,7 @@ class SettingsRepository(private val context: Context) {
             ncmNickname = preferences[Keys.ncmNickname] ?: "",
             ncmUserId = preferences[Keys.ncmUserId] ?: 0L,
             importedPlaylistIds = preferences[Keys.importedPlaylists].orEmpty().split('|').filter(String::isNotBlank).distinct(),
+            homePlaylistId = preferences[Keys.homePlaylistId] ?: "",
         )
     }
 
@@ -88,6 +90,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.ncmNickname] = next.ncmNickname
             preferences[Keys.ncmUserId] = next.ncmUserId
             preferences[Keys.importedPlaylists] = next.importedPlaylistIds.filter(String::isNotBlank).distinct().joinToString("|")
+            preferences[Keys.homePlaylistId] = next.homePlaylistId.trim()
         }
     }
 }

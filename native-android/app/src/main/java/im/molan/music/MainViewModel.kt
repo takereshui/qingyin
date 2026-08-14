@@ -401,6 +401,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 将线上单曲收藏至用户选定的本地歌单；重复歌曲不会重复写入。 */
+    fun addTrackToLocalPlaylist(track: Track, playlist: PlaylistSummary) {
+        if (playlist.source != Track.Source.LOCAL) return
+        viewModelScope.launch {
+            runCatching { playlistRepository.addTrackToLocalPlaylist(playlist.id, track) }
+                .onSuccess { result ->
+                    _localPlaylists.value = _localPlaylists.value
+                        .filterNot { it.id == result.detail.summary.id } + result.detail.summary
+                    if (_playlistDetail.value?.summary?.id == result.detail.summary.id) _playlistDetail.value = result.detail
+                    _playlistMessage.value = if (result.added) {
+                        "已将《${track.title}》收藏到《${result.detail.summary.name}》"
+                    } else {
+                        "《${track.title}》已在《${result.detail.summary.name}》中"
+                    }
+                }
+                .onFailure { error -> _playlistMessage.value = "收藏失败：${error.message ?: "目标歌单不可用"}" }
+        }
+    }
+
     fun loadImportedPlaylists() {
         viewModelScope.launch {
             val cached = playlistRepository.cachedImported(settings.value.importedPlaylistIds)

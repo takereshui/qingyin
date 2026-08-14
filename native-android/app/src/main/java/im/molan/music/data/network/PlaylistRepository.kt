@@ -46,6 +46,22 @@ class PlaylistRepository(
         fileFor("detail:$id").delete()
     }
 
+    data class AddTrackResult(val detail: PlaylistDetail, val added: Boolean)
+
+    /** 将单曲收藏到可编辑的本地歌单；以来源 ID 去重，避免反复收藏产生重复条目。 */
+    suspend fun addTrackToLocalPlaylist(playlistId: String, track: Track): AddTrackResult = withContext(Dispatchers.IO) {
+        require(playlistId.startsWith("local:")) { "只能收藏到本地歌单" }
+        val current = readDetail(playlistId)?.second ?: error("目标歌单不存在或已被删除")
+        val exists = current.tracks.any { it.id == track.id }
+        if (exists) return@withContext AddTrackResult(current, added = false)
+
+        val updatedSummary = current.summary.copy(trackCount = current.tracks.size + 1)
+        val updated = PlaylistDetail(updatedSummary, current.tracks + track)
+        writeLocalSummaries(readLocalSummaries().filterNot { it.id == playlistId } + updatedSummary)
+        writeDetail(playlistId, updated)
+        AddTrackResult(updated, added = true)
+    }
+
     /**
      * 将线上歌单落为一份确定性的本地副本。相同来源和歌单 ID 复用同一本地 ID，
      * 因此后续同步会整体覆盖曲目、封面与标题，不会生成重复的本地歌单。

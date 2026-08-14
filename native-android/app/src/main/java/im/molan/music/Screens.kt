@@ -2,6 +2,7 @@ package im.molan.music
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -49,7 +51,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,20 +70,71 @@ internal fun HomeScreen(
     dailyTracks: List<Track>,
     dailyMessage: String,
     matchFlags: Map<String, Boolean>,
+    playlists: List<PlaylistSummary>,
+    homePlaylistId: String,
     model: MainViewModel,
     onOpenLocal: () -> Unit,
     onOpenQueue: () -> Unit,
+    onSelectHomePlaylist: (String) -> Unit,
 ) {
+    var playlistPickerVisible by remember { mutableStateOf(false) }
+    val selectedPlaylist = playlists.firstOrNull { it.id == homePlaylistId }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.86f)),
                 shape = RoundedCornerShape(28.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
             ) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("本地优先，在线随听", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f))
+                Box(Modifier.fillMaxWidth()) {
+                    // 柔化的莓紫与雾粉光晕，配合半透明容器形成克制的毛玻璃氛围。
+                    Box(
+                        Modifier.align(Alignment.TopEnd).size(132.dp)
+                            .blur(28.dp)
+                            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.68f), CircleShape),
+                    )
+                    Box(
+                        Modifier.align(Alignment.BottomStart).size(92.dp)
+                            .blur(24.dp)
+                            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f), CircleShape),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f), MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f))))
+                            .padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("音乐，刚刚好", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            Text("本地优先，在线随听", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f))
+                        }
+                        if (selectedPlaylist == null) {
+                            FilledTonalButton(onClick = { playlistPickerVisible = true }) {
+                                Icon(Icons.Default.LibraryMusic, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("选择歌单")
+                            }
+                        } else {
+                            Card(
+                                modifier = Modifier.width(142.dp).border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), RoundedCornerShape(16.dp)).clickable { model.openPlaylist(selectedPlaylist) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)),
+                            ) {
+                                Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    PlaylistCover(selectedPlaylist, Modifier.size(38.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(selectedPlaylist.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                        Text("打开歌单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            IconButton(onClick = { playlistPickerVisible = true }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.MoreVert, "更换首页歌单")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -101,6 +156,41 @@ internal fun HomeScreen(
         item { Text("最近扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
         if (tracks.isEmpty()) item { EmptyHint("尚未扫描本地音乐。请到“本地”页面授权并扫描。") }
         else items(tracks.take(8), key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
+    }
+    if (playlistPickerVisible) {
+        AlertDialog(
+            onDismissRequest = { playlistPickerVisible = false },
+            title = { Text("选择首页歌单") },
+            text = {
+                if (playlists.isEmpty()) {
+                    Text("暂无可用歌单。请先在“歌单”页面同步、导入或新建歌单。")
+                } else {
+                    LazyColumn(Modifier.height(320.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(playlists, key = PlaylistSummary::id) { playlist ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    onSelectHomePlaylist(playlist.id)
+                                    playlistPickerVisible = false
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (playlist.id == homePlaylistId) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
+                            ) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    PlaylistCover(playlist, Modifier.size(42.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                                        Text("${playlist.trackCount} 首歌曲", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { playlistPickerVisible = false }) { Text("关闭") } },
+        )
     }
 }
 
@@ -400,7 +490,16 @@ internal fun PlaylistCover(playlist: PlaylistSummary, modifier: Modifier) {
 }
 
 @Composable
-internal fun PlaylistDetailScreen(detail: PlaylistDetail, message: String, matchFlags: Map<String, Boolean>, model: MainViewModel, onBack: () -> Unit) {
+internal fun PlaylistDetailScreen(
+    detail: PlaylistDetail,
+    message: String,
+    matchFlags: Map<String, Boolean>,
+    localPlaylists: List<PlaylistSummary>,
+    model: MainViewModel,
+    onBack: () -> Unit,
+) {
+    var trackToCollect by remember(detail.summary.id) { mutableStateOf<Track?>(null) }
+    val canCollect = detail.summary.source != Track.Source.LOCAL
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -446,7 +545,7 @@ internal fun PlaylistDetailScreen(detail: PlaylistDetail, message: String, match
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             if (detail.tracks.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("歌单暂无可播放曲目", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
@@ -456,10 +555,44 @@ internal fun PlaylistDetailScreen(detail: PlaylistDetail, message: String, match
                             track = track,
                             matchedLocal = matchFlags[track.id] == true,
                             onClick = { model.playPlaylist(detail.tracks, track) },
+                            onCollect = if (canCollect) ({ trackToCollect = track }) else null,
                         )
                     }
                 }
             }
         }
+    }
+    trackToCollect?.let { track ->
+        AlertDialog(
+            onDismissRequest = { trackToCollect = null },
+            title = { Text("收藏到歌单") },
+            text = {
+                if (localPlaylists.isEmpty()) {
+                    Text("暂无本地歌单。请先在“歌单”页面新建歌单，再收藏歌曲。")
+                } else {
+                    LazyColumn(Modifier.height(300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(localPlaylists, key = PlaylistSummary::id) { playlist ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    model.addTrackToLocalPlaylist(track, playlist)
+                                    trackToCollect = null
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                            ) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    PlaylistCover(playlist, Modifier.size(42.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                                        Text("${playlist.trackCount} 首歌曲", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { trackToCollect = null }) { Text("关闭") } },
+        )
     }
 }

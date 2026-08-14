@@ -82,6 +82,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val playlistDetail by model.playlistDetail.collectAsStateWithLifecycle()
     val playlistMessage by model.playlistMessage.collectAsStateWithLifecycle()
     val matchFlags by model.localMatchFlags.collectAsStateWithLifecycle()
+    val homePlaylists = (myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }
     var tab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     var queueVisible by rememberSaveable { mutableStateOf(false) }
     var playerVisible by rememberSaveable { mutableStateOf(false) }
@@ -149,7 +150,10 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             bottomBar = {
                 Column {
                     if (player.current != null) MiniPlayer(player, model, onQueue = { queueVisible = true }, onOpen = { playerVisible = true })
-                    NavigationBar {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f),
+                        tonalElevation = 0.dp,
+                    ) {
                         listOf(AppTab.HOME, AppTab.SEARCH, AppTab.PLAYLISTS, AppTab.LOCAL, AppTab.DOWNLOADS, AppTab.MINE).forEach { item ->
                             val icon = when (item) { AppTab.HOME -> Icons.Default.Home; AppTab.SEARCH -> Icons.Default.Search; AppTab.PLAYLISTS -> Icons.Default.LibraryMusic; AppTab.LOCAL -> Icons.Default.LibraryMusic; AppTab.DOWNLOADS -> Icons.Default.Download; AppTab.MINE -> Icons.Default.AccountCircle }
                             NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(icon, item.title) }, label = { Text(item.title) })
@@ -164,6 +168,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                         detail = playlistDetail!!,
                         message = playlistMessage,
                         matchFlags = matchFlags,
+                        localPlaylists = localPlaylists,
                         model = model,
                         onBack = model::closePlaylist,
                     )
@@ -174,12 +179,15 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                             dailyTracks = dailyTracks,
                             dailyMessage = dailyMessage,
                             matchFlags = matchFlags,
+                            playlists = homePlaylists,
+                            homePlaylistId = settings.homePlaylistId,
                             model = model,
                             onOpenLocal = { tab = AppTab.LOCAL },
                             onOpenQueue = { queueVisible = true },
+                            onSelectHomePlaylist = { id -> model.updateSettings { it.copy(homePlaylistId = id) } },
                         )
                         AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, matchFlags, model)
-                        AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
+                        AppTab.PLAYLISTS -> PlaylistHubScreen(homePlaylists, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
                         AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
                         AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, settings.downloadFolderUri, downloadMessage, model, onPickFolder = { downloadFolder.launch(null) }, onClearFolder = model::clearDownloadFolder)
                         AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
