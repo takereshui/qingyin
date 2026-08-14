@@ -89,6 +89,8 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import im.molan.music.model.AppSettings
 import java.io.File
@@ -225,35 +227,13 @@ internal fun NcmQrLoginDialog(state: NcmQrLoginState, onDismiss: () -> Unit, onR
 
 @Composable
 internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, downloadActionMessage: String, model: MainViewModel, onDismiss: () -> Unit) {
-    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
+    // 外壳只订阅低频结构状态；500ms 位置更新仅在歌词与进度控制组件内生效。
+    val snapshot by model.playback.chromeSnapshot.collectAsStateWithLifecycle()
     val current = snapshot.current ?: return
-    val duration = maxOf(snapshot.durationMs, current.durationMs, 1L)
-    val activeLine = lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 }
     val pagerState = rememberPagerState(pageCount = { 2 })
-    val lyricListState = rememberLazyListState()
-    var sliderValue by remember(current.id) { mutableStateOf(0f) }
-    var isSeeking by remember(current.id) { mutableStateOf(false) }
 
     // 播放器队列切歌时同步切换歌词会话，绝不继续保留上一首的歌词。
     LaunchedEffect(current.id, current.source) { model.ensureLyricsForCurrent(current) }
-    LaunchedEffect(snapshot.positionMs, duration, isSeeking) {
-        if (!isSeeking) sliderValue = (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-    }
-    LaunchedEffect(activeLine, pagerState.currentPage, lyrics.size) {
-        if (pagerState.currentPage == 1 && activeLine >= 0) {
-            // 先保证目标行已进入测量范围；随后按实际 item 高度和实际 viewport 中点校正。
-            // 这避免了用固定行高/固定 dp 偏移所造成的歌词总是靠近底部的问题。
-            lyricListState.scrollToItem(activeLine)
-            delay(32)
-            val layout = lyricListState.layoutInfo
-            val target = layout.visibleItemsInfo.firstOrNull { it.index == activeLine }
-            if (target != null) {
-                val viewportCenter = (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
-                val targetCenter = target.offset + target.size / 2f
-                lyricListState.animateScrollBy(targetCenter - viewportCenter)
-            }
-        }
-    }
 
     Box(Modifier.fillMaxSize()) {
         // 以当前曲目的封面铺满全屏；高斯模糊、暗角渐变和玻璃内容层保证歌词仍有稳定对比度。
@@ -262,9 +242,9 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
             Modifier.fillMaxSize().background(
                 Brush.verticalGradient(
                     listOf(
-                        Color.Black.copy(alpha = 0.34f),
-                        Color.Black.copy(alpha = 0.52f),
-                        Color.Black.copy(alpha = 0.74f),
+                        Color.Black.copy(alpha = 0.48f),
+                        Color.Black.copy(alpha = 0.64f),
+                        Color.Black.copy(alpha = 0.82f),
                     ),
                 ),
             ),
@@ -277,12 +257,12 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxSize()) {
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White.copy(alpha = 0.94f)) }
                     Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                        Text(current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(current.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = 0.96f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(current.artist, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.76f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    Text(current.resolvedQuality?.label ?: current.resolvedQqQuality?.label ?: "在线播放", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 14.dp))
+                    Text(current.resolvedQuality?.label ?: current.resolvedQqQuality?.label ?: "在线播放", style = MaterialTheme.typography.labelMedium, color = Color(0xFFFFB6A3), modifier = Modifier.padding(end = 14.dp))
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -308,52 +288,22 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                             CoverArt(current, Modifier.fillMaxWidth(0.88f).aspectRatio(1f), RoundedCornerShape(30.dp))
                         }
                         Spacer(Modifier.height(28.dp))
-                        Text(current.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(current.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color(0xFFFFF7F4), maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(8.dp))
-                        Text(current.artist, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(current.artist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.76f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(18.dp))
-                        Text("左右滑动查看歌词", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("左右滑动查看歌词", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.64f))
                     }
                 } else if (lyrics.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("暂无可用歌词", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("暂无可用歌词", style = MaterialTheme.typography.titleLarge, color = Color.White.copy(alpha = 0.78f))
                     }
                 } else {
-                    BoxWithConstraints(Modifier.fillMaxSize()) {
-                        // 前后均预留半个歌词视口，确保第一句和最后一句也可真正抵达中线。
-                        val lyricEdgePadding = maxOf(112.dp, maxHeight / 2 - 34.dp)
-                        LazyColumn(
-                            state = lyricListState,
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = 18.dp,
-                                top = lyricEdgePadding,
-                                end = 18.dp,
-                                bottom = lyricEdgePadding,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(22.dp),
-                        ) {
-                            itemsIndexed(lyrics, key = { _, line -> line.timeMs }) { index, line ->
-                                val isActive = index == activeLine
-                                Column {
-                                    Text(
-                                        line.text,
-                                        style = if (isActive) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
-                                        color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.56f),
-                                        fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                                    )
-                                    line.translation?.let { translated ->
-                                        Text(
-                                            translated,
-                                            style = if (isActive) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
-                                            color = if (isActive) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.54f),
-                                            modifier = Modifier.padding(top = 6.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    LyricsGlassPanel(
+                        lyrics = lyrics,
+                        model = model,
+                        isVisible = pagerState.currentPage == 1,
+                    )
                 }
             }
 
@@ -363,18 +313,101 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                         Modifier.padding(horizontal = 5.dp, vertical = 8.dp)
                             .size(if (pagerState.currentPage == index) 9.dp else 7.dp)
                             .clip(CircleShape)
-                            .background(if (pagerState.currentPage == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+                            .background(if (pagerState.currentPage == index) Color(0xFFFFC7B8) else Color.White.copy(alpha = 0.38f)),
                     )
                 }
             }
 
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.46f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-            ) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+            PlaybackControlPanel(
+                current = current,
+                playbackError = playbackError,
+                downloadActionMessage = downloadActionMessage,
+                model = model,
+            )
+        }
+    }
+}
+
+/**
+ * 歌词区域将播放进度映射为“当前行”并做 distinctUntilChanged；正常播放时只在换行时重组。
+ * 旧实现会随每个 500ms position 更新重算整张 LazyColumn，并进行两次列表滚动，容易造成卡顿。
+ */
+@Composable
+private fun LyricsGlassPanel(lyrics: List<LyricLine>, model: MainViewModel, isVisible: Boolean) {
+    val activeLine by remember(lyrics) {
+        model.playback.snapshot
+            .map { snapshot -> lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 } }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = -1)
+    val lyricListState = rememberLazyListState()
+
+    LaunchedEffect(activeLine, isVisible) {
+        if (isVisible && activeLine >= 0) {
+            // 单次定位替代“跳转→延迟测量→二次动画”的连锁工作，降低歌词切换的主线程负担。
+            lyricListState.scrollToItem(activeLine)
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val lyricEdgePadding = maxOf(112.dp, maxHeight / 2 - 34.dp)
+        LazyColumn(
+            state = lyricListState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 20.dp,
+                top = lyricEdgePadding,
+                end = 20.dp,
+                bottom = lyricEdgePadding,
+            ),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            itemsIndexed(lyrics, key = { _, line -> line.timeMs }) { index, line ->
+                val isActive = index == activeLine
+                Column {
+                    Text(
+                        line.text,
+                        style = if (isActive) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                        // 深色封面背景不依赖主题色：当前行用暖白，非当前行保持足够亮度的冷白。
+                        color = if (isActive) Color(0xFFFFF7F4) else Color.White.copy(alpha = 0.70f),
+                        fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    )
+                    line.translation?.let { translated ->
+                        Text(
+                            translated,
+                            style = if (isActive) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                            color = if (isActive) Color.White.copy(alpha = 0.88f) else Color.White.copy(alpha = 0.54f),
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 进度条与播放控制局部订阅全量快照，不让其 500ms 更新触发歌词、封面或顶部栏重组。 */
+@Composable
+private fun PlaybackControlPanel(
+    current: Track,
+    playbackError: String,
+    downloadActionMessage: String,
+    model: MainViewModel,
+) {
+    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
+    val duration = maxOf(snapshot.durationMs, current.durationMs, 1L)
+    var sliderValue by remember(current.id) { mutableStateOf(0f) }
+    var isSeeking by remember(current.id) { mutableStateOf(false) }
+    LaunchedEffect(snapshot.positionMs, duration, isSeeking) {
+        if (!isSeeking) sliderValue = (snapshot.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color.Black.copy(alpha = 0.54f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             Slider(
                 value = sliderValue,
                 onValueChange = { sliderValue = it; isSeeking = true },
@@ -385,19 +418,17 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
                 modifier = Modifier.fillMaxWidth().height(34.dp),
             )
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatDuration((sliderValue * duration).toLong()), style = MaterialTheme.typography.bodyMedium)
-                Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium)
+                Text(formatDuration((sliderValue * duration).toLong()), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.90f))
+                Text(formatDuration(duration), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.82f))
             }
             if (playbackError.isNotBlank()) Text(playbackError, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (downloadActionMessage.isNotBlank()) Text(downloadActionMessage, style = MaterialTheme.typography.bodyMedium, color = if (downloadActionMessage.contains("失败") || downloadActionMessage.contains("无法")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (downloadActionMessage.isNotBlank()) Text(downloadActionMessage, style = MaterialTheme.typography.bodyMedium, color = if (downloadActionMessage.contains("失败") || downloadActionMessage.contains("无法")) MaterialTheme.colorScheme.error else Color(0xFFFFD8CC), maxLines = 2, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth().height(76.dp)) {
-                IconButton(onClick = model.playback::previous, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(30.dp)) }
-                IconButton(onClick = model.playback::toggle, modifier = Modifier.size(68.dp)) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放", Modifier.size(46.dp)) }
-                IconButton(onClick = model.playback::next, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(30.dp)) }
-                IconButton(onClick = model.playback::cycleMode, modifier = Modifier.size(52.dp)) { Icon(if (snapshot.playbackMode == PlaybackMode.SHUFFLE) Icons.Default.Shuffle else Icons.Default.Repeat, modeLabel(snapshot.playbackMode), Modifier.size(26.dp)) }
-                if (current.remoteUrl != null) IconButton(onClick = { model.enqueueDownload(current) }, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.Download, "按所选音质下载到 Music/轻音", Modifier.size(26.dp)) }
-            }
-                }
+                IconButton(onClick = model.playback::previous, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(30.dp), tint = Color.White.copy(alpha = 0.90f)) }
+                IconButton(onClick = model.playback::toggle, modifier = Modifier.size(68.dp)) { Icon(if (snapshot.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (snapshot.isPlaying) "暂停" else "播放", Modifier.size(46.dp), tint = Color(0xFFFFF7F4)) }
+                IconButton(onClick = model.playback::next, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(30.dp), tint = Color.White.copy(alpha = 0.90f)) }
+                IconButton(onClick = model.playback::cycleMode, modifier = Modifier.size(52.dp)) { Icon(if (snapshot.playbackMode == PlaybackMode.SHUFFLE) Icons.Default.Shuffle else Icons.Default.Repeat, modeLabel(snapshot.playbackMode), Modifier.size(26.dp), tint = Color.White.copy(alpha = 0.82f)) }
+                if (current.remoteUrl != null) IconButton(onClick = { model.enqueueDownload(current) }, modifier = Modifier.size(52.dp)) { Icon(Icons.Default.Download, "按所选音质下载到 Music/轻音", Modifier.size(26.dp), tint = Color.White.copy(alpha = 0.82f)) }
             }
         }
     }
@@ -410,11 +441,12 @@ internal fun CoverBackdrop(track: Track) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (source != null) {
             AsyncImage(
-                model = ImageRequest.Builder(context).data(source).size(960).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
+                model = ImageRequest.Builder(context).data(source).size(720).memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).crossfade(false).build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(56.dp),
-                alpha = 0.94f,
+                                            modifier = Modifier.fillMaxSize().blur(40.dp),
+                            alpha = 0.82f,
+
             )
         }
     }
