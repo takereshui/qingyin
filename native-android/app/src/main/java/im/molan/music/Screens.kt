@@ -60,7 +60,15 @@ import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
 
 @Composable
-internal fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMessage: String, matchFlags: Map<String, Boolean>, model: MainViewModel) {
+internal fun HomeScreen(
+    tracks: List<Track>,
+    dailyTracks: List<Track>,
+    dailyMessage: String,
+    matchFlags: Map<String, Boolean>,
+    model: MainViewModel,
+    onOpenLocal: () -> Unit,
+    onOpenQueue: () -> Unit,
+) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Card(
@@ -77,8 +85,8 @@ internal fun HomeScreen(tracks: List<Track>, dailyTracks: List<Track>, dailyMess
         item { Text("快捷入口", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                QuickCard("本地音乐", "${tracks.size} 首", Icons.Default.LibraryMusic, Modifier.weight(1f))
-                QuickCard("播放队列", "原生管理", Icons.AutoMirrored.Filled.QueueMusic, Modifier.weight(1f))
+                QuickCard("本地音乐", "${tracks.size} 首", Icons.Default.LibraryMusic, Modifier.weight(1f), onClick = onOpenLocal)
+                QuickCard("播放队列", "原生管理", Icons.AutoMirrored.Filled.QueueMusic, Modifier.weight(1f), onClick = onOpenQueue)
             }
         }
         item {
@@ -135,9 +143,15 @@ internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackEr
 }
 
 @Composable
-internal fun QuickCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
+internal fun QuickCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {},
+) {
     Card(
-        modifier,
+        modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),

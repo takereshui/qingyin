@@ -169,7 +169,15 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                     )
                 } else {
                     when (tab) {
-                        AppTab.HOME -> HomeScreen(tracks, dailyTracks, dailyMessage, matchFlags, model)
+                        AppTab.HOME -> HomeScreen(
+                            tracks = tracks,
+                            dailyTracks = dailyTracks,
+                            dailyMessage = dailyMessage,
+                            matchFlags = matchFlags,
+                            model = model,
+                            onOpenLocal = { tab = AppTab.LOCAL },
+                            onOpenQueue = { queueVisible = true },
+                        )
                         AppTab.SEARCH -> SearchScreen(searchTracks, networkMessage, playbackError, matchFlags, model)
                         AppTab.PLAYLISTS -> PlaylistHubScreen((myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }, playlistMessage, model, onCreateLocal = { localPlaylistCreateVisible = true })
                         AppTab.LOCAL -> LocalScreen(tracks, settings.customFolderUris, scanMessage, model, onRequestPermission = { mediaPermission.launch(permission) }, onPickFolder = { customFolder.launch(null) })
