@@ -11,8 +11,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
-import com.mpatric.mp3agic.ID3v24Tag
-import com.mpatric.mp3agic.Mp3File
+import org.jaudiotagger.audio.AudioFileIO
+import org.jaudiotagger.tag.FieldKey
+import org.jaudiotagger.tag.images.ArtworkFactory
 import im.molan.music.data.settings.SettingsRepository
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
@@ -251,7 +252,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 return@runCatching
             }
             val completedBytes = finalFile.length()
-            writeAuthoritativeMp3Metadata(finalFile, task)
+            writeAuthoritativeAudioMetadata(finalFile, task)
             val published = publishCompleted(finalFile, task)
             updateTask(
                 task.copy(
@@ -410,7 +411,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 if (finalFile.exists()) finalFile.delete()
                 require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
                 // 下载 API 可能返回裸音频；先把歌单/搜索阶段的原始字段写入可写 MP3，再发布到公开目录。
-                writeAuthoritativeMp3Metadata(finalFile, initial)
+                writeAuthoritativeAudioMetadata(finalFile, initial)
                 // 完成后发布到公共目录（MediaStore / SAF / 公共 Music），让系统媒体库与外部播放器可见。
                 val published = publishCompleted(finalFile, initial)
                 updateTask(id) {
@@ -435,49 +436,55 @@ class DownloadRepository(private val context: Context, private val settingsRepos
 
     /**
      * 下载接口有时仅提供裸 MP3 字节；这里以入队时保存的歌单/搜索原始字段为唯一权威来源。
-     * 非 MP3 容器保留原始音频，不伪造不兼容的标签；展示层和 MediaStore 仍使用任务字段。
+     * 文件不再信任下载 API 的标签或封面：所有可写容器都会被原始任务字段覆盖，并在落盘后回读校验。
+     * 写入或校验失败时任务会失败，绝不把缺少权威标签的文件发布到用户目录。
      */
-    private fun writeAuthoritativeMp3Metadata(file: File, task: Task) {
-        if (!file.name.endsWith(".mp3", ignoreCase = true) || !file.isFile || file.length() <= 0L) return
-        runCatching {
-            val mp3 = Mp3File(file.absolutePath)
-            val tag = if (mp3.hasId3v2Tag()) mp3.id3v2Tag else ID3v24Tag().also(mp3::setId3v2Tag)
-            tag.title = task.title
-            tag.artist = task.artist
-            tag.album = task.album
-            tag.albumArtist = task.artist
-            task.artworkUri?.let(::downloadArtworkForTag)?.let { (bytes, mime) ->
-                tag.setAlbumImage(bytes, mime)
+    private fun writeAuthoritativeAudioMetadata(file: File, task: Task) {
+        require(file.isFile && file.length() > 0L) { "下载音频为空，无法写入元数据" }
+        val coverFile = task.artworkUri?.let(::downloadArtworkForTag)
+        try {
+            val audio = AudioFileIO.read(file)
+            val tag = audio.tagOrCreateAndSetDefault
+            tag.setField(FieldKey.TITLE, task.title)
+            tag.setField(FieldKey.ARTIST, task.artist)
+            tag.setField(FieldKey.ALBUM, task.album)
+            tag.setField(FieldKey.ALBUM_ARTIST, task.artist)
+            if (coverFile != null) {
+                tag.deleteArtworkField()
+                tag.addField(ArtworkFactory.createArtworkFromFile(coverFile))
             }
-            val tagged = File(file.parentFile, "${file.name}.tagged-${task.id}")
-            tagged.delete()
-            mp3.save(tagged.absolutePath)
-            if (tagged.isFile && tagged.length() > 0L) {
-                file.delete()
-                if (!tagged.renameTo(file)) {
-                    tagged.copyTo(file, overwrite = true)
-                    tagged.delete()
-                }
-            }
+            AudioFileIO.write(audio)
+
+            // 强制验证：不接受接口遗留标签、空标签或写入后未包含封面的音频文件。
+            val verifiedTag = AudioFileIO.read(file).tag ?: error("写入后未检测到音频标签")
+            require(verifiedTag.getFirst(FieldKey.TITLE) == task.title) { "标题标签校验失败" }
+            require(verifiedTag.getFirst(FieldKey.ARTIST) == task.artist) { "歌手标签校验失败" }
+            require(verifiedTag.getFirst(FieldKey.ALBUM) == task.album) { "专辑标签校验失败" }
+            if (coverFile != null) require(verifiedTag.firstArtwork != null) { "内嵌封面校验失败" }
+        } finally {
+            coverFile?.delete()
         }
     }
 
-    /** 下载任务已处于 I/O 工作线程；封面限制在 4MB 以内，避免异常图片挤占内存。 */
-    private fun downloadArtworkForTag(url: String): Pair<ByteArray, String>? {
+    /** 下载任务已处于 I/O 工作线程；原始歌单封面限制在 4MB 以内并临时落盘供标签库嵌入。 */
+    private fun downloadArtworkForTag(url: String): File? {
         if (!url.startsWith("https://") && !url.startsWith("http://")) return null
         return runCatching {
             val request = Request.Builder().url(url).header("User-Agent", "Qingyin/1.0").get().build()
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val body = response.body ?: return@use null
-                if (body.contentLength() > 4L * 1024L * 1024L) return@use null
+                require(response.isSuccessful) { "原始封面下载失败 (HTTP ${response.code})" }
+                val body = requireNotNull(response.body) { "原始封面响应为空" }
+                require(body.contentLength() <= 4L * 1024L * 1024L || body.contentLength() < 0L) { "原始封面超过 4MB" }
                 val bytes = body.bytes()
-                if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return@use null
-                val mime = response.header("Content-Type")?.substringBefore(';')?.takeIf { it.startsWith("image/") }
-                    ?: if (url.substringBefore('?').endsWith(".png", ignoreCase = true)) "image/png" else "image/jpeg"
-                bytes to mime
+                require(bytes.isNotEmpty() && bytes.size <= 4 * 1024 * 1024) { "原始封面为空或过大" }
+                val suffix = when {
+                    response.header("Content-Type")?.contains("png", ignoreCase = true) == true -> ".png"
+                    response.header("Content-Type")?.contains("webp", ignoreCase = true) == true -> ".webp"
+                    else -> ".jpg"
+                }
+                File.createTempFile("qingyin-cover-", suffix, workDir).apply { writeBytes(bytes) }
             }
-        }.getOrNull()
+        }.getOrElse { throw IllegalStateException("无法取得歌单原始封面：${it.message}", it) }
     }
 
     /**

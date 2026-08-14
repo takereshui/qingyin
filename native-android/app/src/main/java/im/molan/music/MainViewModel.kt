@@ -963,7 +963,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         async {
                             runCatching {
                                 withTimeout(25_000L) { resolveDownloadTrack(track) }
-                            }.mapCatching(::enqueueResolvedDownload)
+                            }.mapCatching { resolved -> enqueueResolvedDownload(resolved, original = track) }
                         }
                     }.awaitAll()
                 }
@@ -996,9 +996,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val url = resolved.remoteUrl
                 val cacheHit = url != null && onlineCache.isFullyCached(url)
                 val enqueueResult = if (cacheHit) {
-                    runCatching { enqueueResolvedFromCache(resolved, url!!) }
+                    runCatching { enqueueResolvedFromCache(resolved, url!!, original = track) }
                 } else {
-                    runCatching { enqueueResolvedDownload(resolved) }
+                    runCatching { enqueueResolvedDownload(resolved, original = track) }
                 }
                 val text = if (enqueueResult.isSuccess) {
                     val enqueue = enqueueResult.getOrThrow()
@@ -1031,43 +1031,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
     }
 
-    private fun enqueueResolvedDownload(downloadable: Track): DownloadRepository.EnqueueResult {
-        val (fileName, _, referer) = downloadFileSpec(downloadable)
+    /**
+     * 下载 API 仅提供音频载体；最终文件身份永远来自用户浏览到的歌单/搜索曲目。
+     * 因此任何解析接口回传的标题、歌手、专辑、时长或封面都不能覆盖 original。
+     */
+    private fun enqueueResolvedDownload(downloadable: Track, original: Track = downloadable): DownloadRepository.EnqueueResult {
+        val (fileName, _, referer) = downloadFileSpec(downloadable, original)
         return downloadRepository.enqueueIfAbsent(
             requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
-            downloadable.title,
-            downloadable.artist,
+            original.title,
+            original.artist,
             fileName,
             referer,
-            album = downloadable.album,
-            artworkUri = downloadable.artworkUri?.toString(),
-            durationMs = downloadable.durationMs,
+            album = original.album,
+            artworkUri = original.artworkUri?.toString(),
+            durationMs = original.durationMs,
         )
     }
 
     /** 试听缓存已完整命中：直接从缓存字节写入下载目录，不经网络。 */
-    private fun enqueueResolvedFromCache(downloadable: Track, url: String): DownloadRepository.EnqueueResult {
-        val (fileName, _, referer) = downloadFileSpec(downloadable)
+    private fun enqueueResolvedFromCache(downloadable: Track, url: String, original: Track = downloadable): DownloadRepository.EnqueueResult {
+        val (fileName, _, referer) = downloadFileSpec(downloadable, original)
         return downloadRepository.enqueueFromCached(
             url,
-            downloadable.title,
-            downloadable.artist,
+            original.title,
+            original.artist,
             fileName,
             referer,
-            album = downloadable.album,
-            artworkUri = downloadable.artworkUri?.toString(),
-            durationMs = downloadable.durationMs,
+            album = original.album,
+            artworkUri = original.artworkUri?.toString(),
+            durationMs = original.durationMs,
         ) { app.onlineCache.openCachedStream(url) }
     }
 
-    private fun downloadFileSpec(downloadable: Track): Triple<String, String, String?> {
+    private fun downloadFileSpec(downloadable: Track, original: Track = downloadable): Triple<String, String, String?> {
         val extension = downloadable.audioExtension
             ?.lowercase()
             ?.replace(Regex("[^a-z0-9]"), "")
             ?.takeIf(String::isNotBlank)
             ?: "mp3"
         val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
-        val fileName = "${downloadable.artist} - ${downloadable.title}.$extension"
+        val fileName = "${original.artist} - ${original.title}.$extension"
         val referer = when (downloadable.source) {
             Track.Source.NETEASE -> "https://music.163.com/"
             Track.Source.QQ -> "https://y.qq.com/"
