@@ -2,6 +2,7 @@ package im.molan.music.data.download
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -47,6 +48,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         val id: Long,
         val title: String,
         val artist: String,
+        /** 解析线上曲目时得到的原始专辑、封面和时长，用于下载后完整还原展示信息。 */
+        val album: String = "",
+        val artworkUri: String? = null,
+        val durationMs: Long = 0L,
         val url: String,
         val fileName: String,
         val status: DownloadEntry.Status,
@@ -104,7 +109,16 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         enqueueIfAbsent(url, title, artist, fileName, referer).id
 
     /** 相同标题和艺人的下载任务（包括已完成/排队/失败）只保留一条，避免歌单批量下载重复入队。 */
-    fun enqueueIfAbsent(url: String, title: String, artist: String, fileName: String, referer: String? = null): EnqueueResult {
+    fun enqueueIfAbsent(
+        url: String,
+        title: String,
+        artist: String,
+        fileName: String,
+        referer: String? = null,
+        album: String = "",
+        artworkUri: String? = null,
+        durationMs: Long = 0L,
+    ): EnqueueResult {
         require(url.startsWith("https://") || url.startsWith("http://")) { "下载地址无效" }
         val cleanTitle = title.ifBlank { "轻音下载" }
         val identity = downloadIdentity(cleanTitle, artist)
@@ -131,6 +145,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     id = id,
                     title = cleanTitle,
                     artist = artist,
+                    album = album,
+                    artworkUri = artworkUri,
+                    durationMs = durationMs,
                     url = url,
                     fileName = "$id-$safeName",
                     status = DownloadEntry.Status.QUEUED,
@@ -182,6 +199,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         artist: String,
         fileName: String,
         referer: String?,
+        album: String = "",
+        artworkUri: String? = null,
+        durationMs: Long = 0L,
         readBytes: () -> InputStream?,
     ): EnqueueResult {
         require(url.startsWith("https://") || url.startsWith("http://")) { "下载地址无效" }
@@ -201,6 +221,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     id = id,
                     title = cleanTitle,
                     artist = artist,
+                    album = album,
+                    artworkUri = artworkUri,
+                    durationMs = durationMs,
                     url = url,
                     fileName = "$id-$safeName",
                     status = DownloadEntry.Status.DOWNLOADING,
@@ -262,29 +285,53 @@ class DownloadRepository(private val context: Context, private val settingsRepos
 
     /** 已下载曲目按优先级取地址：MediaStore/SAF Uri → 完成路径 → 当前工作目录 → 旧版私有目录。 */
     private fun Task.toDownloadedTrack(): Track? {
-        val uri = mediaUri?.takeIf(String::isNotBlank)?.let(Uri::parse)
-        if (uri != null) {
-            return Track(
-                id = "download:$id",
-                title = title,
-                artist = artist.substringBefore(" · ").ifBlank { "未知歌手" },
-                uri = uri,
-                source = Track.Source.DOWNLOADED,
-                localFileName = fileName,
-            )
-        }
-        val file = finalPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
-            ?: File(workDir, fileName).takeIf { it.isFile && it.length() > 0L }
-            ?: File(legacyDir, fileName).takeIf { it.isFile && it.length() > 0L }
-            ?: return null
+        val playableUri = mediaUri?.takeIf(String::isNotBlank)?.let(Uri::parse)
+            ?: (finalPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
+                ?: File(workDir, fileName).takeIf { it.isFile && it.length() > 0L }
+                ?: File(legacyDir, fileName).takeIf { it.isFile && it.length() > 0L }
+                ?: return null).let(Uri::fromFile)
+        val tags = readEmbeddedMetadata(playableUri)
         return Track(
             id = "download:$id",
-            title = title,
-            artist = artist.substringBefore(" · ").ifBlank { "未知歌手" },
-            uri = Uri.fromFile(file),
+            // 线上解析得到的标题、歌手优先，文件标签作为旧任务或缺失字段的回退。
+            title = title.ifBlank { tags.title ?: "轻音下载" },
+            artist = artist.substringBefore(" · ").ifBlank { tags.artist ?: "未知歌手" },
+            album = album.ifBlank { tags.album.orEmpty() },
+            durationMs = durationMs.takeIf { it > 0L } ?: tags.durationMs,
+            uri = playableUri,
+            artworkUri = artworkUri?.takeIf(String::isNotBlank)?.let(Uri::parse),
             source = Track.Source.DOWNLOADED,
             localFileName = fileName,
         )
+    }
+
+    private data class EmbeddedMetadata(
+        val title: String? = null,
+        val artist: String? = null,
+        val album: String? = null,
+        val durationMs: Long = 0L,
+    )
+
+    /** 下载音频可能自带 ID3/FLAC 标签；读取它们补全旧任务，并让封面提取走同一真实文件 URI。 */
+    private fun readEmbeddedMetadata(uri: Uri): EmbeddedMetadata {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            EmbeddedMetadata(
+                title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE).cleanTag(),
+                artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).cleanTag(),
+                album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).cleanTag(),
+                durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L,
+            )
+        } catch (_: Exception) {
+            EmbeddedMetadata()
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun String?.cleanTag(): String? = this?.trim()?.takeIf {
+        it.isNotBlank() && !it.equals("unknown", ignoreCase = true) && !it.equals("<unknown>", ignoreCase = true)
     }
 
     private fun schedule(id: Long) {
@@ -465,6 +512,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                         .put("id", task.id)
                         .put("title", task.title)
                         .put("artist", task.artist)
+                        .put("album", task.album)
+                        .put("artworkUri", task.artworkUri.orEmpty())
+                        .put("duration", task.durationMs)
                         .put("url", task.url)
                         .put("fileName", task.fileName)
                         .put("status", task.status.name)
@@ -517,6 +567,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     id = row.optLong("id"),
                     title = row.optString("title").ifBlank { "轻音下载" },
                     artist = row.optString("artist"),
+                    album = row.optString("album"),
+                    artworkUri = row.optString("artworkUri").takeIf(String::isNotBlank),
+                    durationMs = row.optLong("duration"),
                     url = url,
                     fileName = row.optString("fileName").ifBlank { "轻音下载" },
                     status = runCatching { DownloadEntry.Status.valueOf(row.optString("status")) }.getOrDefault(DownloadEntry.Status.FAILED),

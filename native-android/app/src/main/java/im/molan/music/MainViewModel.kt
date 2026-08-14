@@ -994,25 +994,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun enqueueResolvedDownload(downloadable: Track): DownloadRepository.EnqueueResult {
-        val (fileName, qualityLabel, referer) = downloadFileSpec(downloadable)
+        val (fileName, _, referer) = downloadFileSpec(downloadable)
         return downloadRepository.enqueueIfAbsent(
             requireNotNull(downloadable.remoteUrl) { "解析结果未包含下载地址" },
             downloadable.title,
-            "${downloadable.artist} · $qualityLabel",
+            downloadable.artist,
             fileName,
             referer,
+            album = downloadable.album,
+            artworkUri = downloadable.artworkUri?.toString(),
+            durationMs = downloadable.durationMs,
         )
     }
 
     /** 试听缓存已完整命中：直接从缓存字节写入下载目录，不经网络。 */
     private fun enqueueResolvedFromCache(downloadable: Track, url: String): DownloadRepository.EnqueueResult {
-        val (fileName, qualityLabel, referer) = downloadFileSpec(downloadable)
+        val (fileName, _, referer) = downloadFileSpec(downloadable)
         return downloadRepository.enqueueFromCached(
             url,
             downloadable.title,
-            "${downloadable.artist} · $qualityLabel",
+            downloadable.artist,
             fileName,
             referer,
+            album = downloadable.album,
+            artworkUri = downloadable.artworkUri?.toString(),
+            durationMs = downloadable.durationMs,
         ) { app.onlineCache.openCachedStream(url) }
     }
 
