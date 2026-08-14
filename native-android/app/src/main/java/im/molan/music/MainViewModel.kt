@@ -29,6 +29,10 @@ import im.molan.music.model.DownloadEntry
 import im.molan.music.model.Track
 import im.molan.music.model.LyricLine
 import im.molan.music.model.LocalMetadataIssue
+import im.molan.music.model.LocalMetadataRepairResult
+import im.molan.music.model.LocalMetadataRepairResultStatus
+import im.molan.music.model.LocalMetadataRepairStage
+import im.molan.music.model.LocalMetadataRepairState
 import im.molan.music.model.NcmQrLoginState
 import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlayerSnapshot
@@ -76,8 +80,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _localMetadataIssues = MutableStateFlow<List<LocalMetadataIssue>>(emptyList())
     /** 仅本地页面订阅：避免深度标签检查影响首页和播放页。 */
     val localMetadataIssues: StateFlow<List<LocalMetadataIssue>> = _localMetadataIssues.asStateFlow()
-    private val _localMetadataRepairMessage = MutableStateFlow("")
-    val localMetadataRepairMessage: StateFlow<String> = _localMetadataRepairMessage.asStateFlow()
+    private val _localMetadataRepairState = MutableStateFlow(LocalMetadataRepairState())
+    val localMetadataRepairState: StateFlow<LocalMetadataRepairState> = _localMetadataRepairState.asStateFlow()
     private val _localRepairWriteUris = MutableStateFlow<List<Uri>>(emptyList())
     /** Android 11+ 需要由 Activity 发起系统写入授权。 */
     val localRepairWriteUris: StateFlow<List<Uri>> = _localRepairWriteUris.asStateFlow()
@@ -290,22 +294,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val local = _localTracks.value
             if (local.isEmpty()) {
                 _localMetadataIssues.value = emptyList()
-                _localMetadataRepairMessage.value = "请先扫描本地音乐"
+                _localMetadataRepairState.value = LocalMetadataRepairState(
+                    stage = LocalMetadataRepairStage.FINISHED,
+                    message = "请先扫描本地音乐",
+                )
                 return@launch
             }
-            _localMetadataRepairMessage.value = "正在检查 ${local.size} 首本地音乐的标签与内嵌封面…"
-            runCatching { localMetadataRepairRepository.findIssues(local) }
-                .onSuccess { issues ->
-                    _localMetadataIssues.value = issues
-                    _localMetadataRepairMessage.value = if (issues.isEmpty()) {
-                        "本地音乐的标题、歌手、专辑和内嵌封面均已完整"
+            _localMetadataIssues.value = emptyList()
+            _localMetadataRepairState.value = LocalMetadataRepairState(
+                stage = LocalMetadataRepairStage.SCANNING,
+                total = local.size,
+                message = "正在读取本地音频标签与内嵌封面…",
+            )
+            runCatching {
+                localMetadataRepairRepository.findIssues(local) { completed, total, current ->
+                    _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                        stage = LocalMetadataRepairStage.SCANNING,
+                        current = completed,
+                        total = total,
+                        currentTitle = current.title,
+                        message = "正在检查《${current.title}》的标签和封面",
+                    )
+                }
+            }.onSuccess { issues ->
+                _localMetadataIssues.value = issues
+                _localMetadataRepairState.value = LocalMetadataRepairState(
+                    stage = LocalMetadataRepairStage.READY,
+                    current = local.size,
+                    total = local.size,
+                    message = if (issues.isEmpty()) {
+                        "检查完成：所有本地音乐均已有完整标签和内嵌封面"
                     } else {
-                        "发现 ${issues.size} 首缺失信息的音乐；请选择后再自动修复"
-                    }
-                }
-                .onFailure { error ->
-                    _localMetadataRepairMessage.value = "检查失败：${error.message ?: "无法读取本地标签"}"
-                }
+                        "检查完成：发现 ${issues.size} 首待修复音乐，请勾选后继续"
+                    },
+                )
+            }.onFailure { error ->
+                _localMetadataRepairState.value = LocalMetadataRepairState(
+                    stage = LocalMetadataRepairStage.FINISHED,
+                    total = local.size,
+                    message = "检查失败：${error.message ?: "无法读取本地标签"}",
+                )
+            }
         }
     }
 
@@ -313,11 +342,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun requestLocalMetadataRepair(issues: List<LocalMetadataIssue>) {
         if (issues.isEmpty()) return
         pendingLocalMetadataRepairs = issues.distinctBy { it.track.id }
+        _localMetadataRepairState.value = LocalMetadataRepairState(
+            stage = LocalMetadataRepairStage.AWAITING_PERMISSION,
+            total = pendingLocalMetadataRepairs.size,
+            message = "已选择 ${pendingLocalMetadataRepairs.size} 首，正在准备系统写入授权…",
+            results = pendingLocalMetadataRepairs.map { issue ->
+                LocalMetadataRepairResult(
+                    trackId = issue.track.id,
+                    title = issue.track.title,
+                    artist = issue.track.artist,
+                    status = LocalMetadataRepairResultStatus.PENDING,
+                    detail = "等待匹配原始信息",
+                )
+            },
+        )
         val mediaUris = pendingLocalMetadataRepairs.mapNotNull { it.track.uri }
             .filter { it.authority == MediaStore.AUTHORITY }
             .distinct()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mediaUris.isNotEmpty()) {
-            _localMetadataRepairMessage.value = "请在系统弹窗中允许轻音修改所选 ${mediaUris.size} 个音频文件"
+            _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                message = "请在系统弹窗中允许轻音修改所选 ${mediaUris.size} 个音频文件",
+            )
             _localRepairWriteUris.value = mediaUris
         } else {
             performLocalMetadataRepair()
@@ -329,7 +374,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _localRepairWriteUris.value = emptyList()
         if (!granted) {
             pendingLocalMetadataRepairs = emptyList()
-            _localMetadataRepairMessage.value = "未获得写入授权，未修改任何本地文件"
+            _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                stage = LocalMetadataRepairStage.FINISHED,
+                message = "未获得写入授权，未修改任何本地文件。你可以重新选择后再试。",
+            )
             return
         }
         performLocalMetadataRepair()
@@ -339,33 +387,89 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val selected = pendingLocalMetadataRepairs
         if (selected.isEmpty()) return
         viewModelScope.launch {
-            _localMetadataRepairMessage.value = "正在为 ${selected.size} 首所选音乐匹配原始信息…"
-            var repaired = 0
-            var unmatched = 0
-            var failed = 0
             val repairedIds = mutableSetOf<String>()
-            selected.forEach { issue ->
+            selected.forEachIndexed { index, issue ->
+                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                    stage = LocalMetadataRepairStage.MATCHING,
+                    current = index,
+                    total = selected.size,
+                    currentTitle = issue.track.title,
+                    message = "${index + 1}/${selected.size}：正在匹配《${issue.track.title}》的原始信息",
+                )
+                updateLocalMetadataRepairResult(issue.track.id, LocalMetadataRepairResultStatus.MATCHING, "正在匹配原始信息")
                 val source = runCatching { findOriginalTrackForRepair(issue.track) }.getOrNull()
                 if (source == null) {
-                    unmatched++
-                    return@forEach
+                    updateLocalMetadataRepairResult(issue.track.id, LocalMetadataRepairResultStatus.NO_MATCH, "未找到通过严格匹配门槛的原始曲目")
+                    _localMetadataRepairState.value = _localMetadataRepairState.value.copy(current = index + 1)
+                    return@forEachIndexed
                 }
-                runCatching { localMetadataRepairRepository.repair(issue.track, source) }
-                    .onSuccess { repaired++; repairedIds += issue.track.id }
-                    .onFailure { failed++ }
+                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                    stage = LocalMetadataRepairStage.WRITING,
+                    message = "${index + 1}/${selected.size}：正在写入《${issue.track.title}》的标签和封面",
+                )
+                updateLocalMetadataRepairResult(issue.track.id, LocalMetadataRepairResultStatus.WRITING, "正在下载封面并写入标签")
+                runCatching {
+                    localMetadataRepairRepository.repair(issue.track, source) { step ->
+                        when (step) {
+                            LocalMetadataRepairRepository.RepairStep.WRITING_TAGS -> {
+                                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                                    stage = LocalMetadataRepairStage.WRITING,
+                                    message = "${index + 1}/${selected.size}：正在写入《${issue.track.title}》",
+                                )
+                            }
+                            LocalMetadataRepairRepository.RepairStep.VERIFYING -> {
+                                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                                    stage = LocalMetadataRepairStage.VERIFYING,
+                                    message = "${index + 1}/${selected.size}：正在校验《${issue.track.title}》的标签和封面",
+                                )
+                                updateLocalMetadataRepairResult(issue.track.id, LocalMetadataRepairResultStatus.WRITING, "正在回读校验标签和内嵌封面")
+                            }
+                            LocalMetadataRepairRepository.RepairStep.REPLACING_FILE -> {
+                                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(
+                                    stage = LocalMetadataRepairStage.WRITING,
+                                    message = "${index + 1}/${selected.size}：正在安全写回《${issue.track.title}》",
+                                )
+                            }
+                        }
+                    }
+                }.onSuccess {
+                    repairedIds += issue.track.id
+                    updateLocalMetadataRepairResult(issue.track.id, LocalMetadataRepairResultStatus.SUCCESS, "已写入并校验标题、歌手、专辑和内嵌封面")
+                }.onFailure { error ->
+                    updateLocalMetadataRepairResult(
+                        issue.track.id,
+                        LocalMetadataRepairResultStatus.FAILED,
+                        error.message?.takeIf(String::isNotBlank) ?: "写入失败：${error.javaClass.simpleName}",
+                    )
+                }
+                _localMetadataRepairState.value = _localMetadataRepairState.value.copy(current = index + 1)
             }
             pendingLocalMetadataRepairs = emptyList()
-            _localMetadataIssues.value = _localMetadataIssues.value.filterNot { issue -> issue.track.id in repairedIds }
-            _localMetadataRepairMessage.value = buildString {
-                append("已修复 $repaired 首")
-                if (unmatched > 0) append(" · $unmatched 首未找到可靠匹配")
-                if (failed > 0) append(" · $failed 首写入失败")
-                append("。已重新刷新本地音乐库")
-            }
-            // 重读 MediaStore/SAF 标签与封面，列表和播放页立刻使用新内嵌信息。
+            _localMetadataIssues.value = _localMetadataIssues.value.filterNot { it.track.id in repairedIds }
+            val state = _localMetadataRepairState.value
+            _localMetadataRepairState.value = state.copy(
+                stage = LocalMetadataRepairStage.FINISHED,
+                current = selected.size,
+                total = selected.size,
+                currentTitle = "",
+                message = "处理完成：成功 ${state.successCount} 首 · 未匹配 ${state.noMatchCount} 首 · 失败 ${state.failedCount} 首",
+            )
+            // 刷新歌曲列表；结果明细保留，直至用户下次主动检查。
             scanLocalMusic()
-            scanLocalMetadataIssues()
         }
+    }
+
+    private fun updateLocalMetadataRepairResult(
+        trackId: String,
+        status: LocalMetadataRepairResultStatus,
+        detail: String,
+    ) {
+        val state = _localMetadataRepairState.value
+        _localMetadataRepairState.value = state.copy(
+            results = state.results.map { result ->
+                if (result.trackId == trackId) result.copy(status = status, detail = detail) else result
+            },
+        )
     }
 
     /**

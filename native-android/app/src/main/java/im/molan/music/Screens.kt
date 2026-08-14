@@ -63,6 +63,9 @@ import androidx.compose.ui.unit.dp
 import im.molan.music.model.AppSettings
 import im.molan.music.model.DownloadEntry
 import im.molan.music.model.LocalMetadataIssue
+import im.molan.music.model.LocalMetadataRepairResultStatus
+import im.molan.music.model.LocalMetadataRepairStage
+import im.molan.music.model.LocalMetadataRepairState
 import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
@@ -264,27 +267,91 @@ internal fun LocalScreen(
     folderUris: List<String>,
     message: String,
     metadataIssues: List<LocalMetadataIssue>,
-    metadataRepairMessage: String,
+    metadataRepairState: LocalMetadataRepairState,
     model: MainViewModel,
     onRequestPermission: () -> Unit,
     onPickFolder: () -> Unit,
 ) {
-    var repairDialogVisible by remember { mutableStateOf(false) }
+    var repairPickerVisible by remember { mutableStateOf(false) }
     var selectedIssueIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    LaunchedEffect(repairDialogVisible) {
-        if (repairDialogVisible) model.scanLocalMetadataIssues()
-    }
-    LaunchedEffect(metadataIssues) {
-        if (repairDialogVisible && selectedIssueIds.isEmpty()) selectedIssueIds = metadataIssues.map { it.track.id }.toSet()
-    }
+    val repairBusy = metadataRepairState.stage in setOf(
+        LocalMetadataRepairStage.SCANNING,
+        LocalMetadataRepairStage.AWAITING_PERMISSION,
+        LocalMetadataRepairStage.MATCHING,
+        LocalMetadataRepairStage.WRITING,
+        LocalMetadataRepairStage.VERIFYING,
+    )
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) { Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                Text("本地音乐", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
                     FilledTonalButton(onClick = onPickFolder) { Text("添加文件夹") }
-                    FilledTonalButton(onClick = { repairDialogVisible = true }) { Text("修复信息") }
-                    FilledTonalButton(onClick = { model.scanLocalMusic() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描") }
+                    FilledTonalButton(onClick = { model.scanLocalMusic() }) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("扫描音乐") }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("本地信息修复", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Text("检查真实标签和内嵌封面；只修复你选择的文件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        FilledTonalButton(onClick = model::scanLocalMetadataIssues, enabled = !repairBusy) {
+                            Text(if (metadataRepairState.stage == LocalMetadataRepairStage.SCANNING) "检查中" else "检查缺失信息")
+                        }
+                    }
+                    Text(metadataRepairState.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (metadataRepairState.total > 0 && (repairBusy || metadataRepairState.stage == LocalMetadataRepairStage.READY || metadataRepairState.stage == LocalMetadataRepairStage.FINISHED)) {
+                        LinearProgressIndicator(
+                            progress = { metadataRepairState.progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(8.dp)),
+                        )
+                        Text(
+                            "${metadataRepairState.current.coerceAtMost(metadataRepairState.total)} / ${metadataRepairState.total}" +
+                                metadataRepairState.currentTitle.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (metadataRepairState.stage == LocalMetadataRepairStage.READY && metadataIssues.isNotEmpty()) {
+                        FilledTonalButton(onClick = { repairPickerVisible = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("选择 ${metadataIssues.size} 首待修复音乐")
+                        }
+                    }
+                    if (metadataRepairState.results.isNotEmpty()) {
+                        Text(
+                            "处理结果：成功 ${metadataRepairState.successCount} · 未匹配 ${metadataRepairState.noMatchCount} · 失败 ${metadataRepairState.failedCount}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        LazyColumn(Modifier.height(168.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            items(metadataRepairState.results, key = { it.trackId }) { result ->
+                                val color = when (result.status) {
+                                    LocalMetadataRepairResultStatus.SUCCESS -> MaterialTheme.colorScheme.primary
+                                    LocalMetadataRepairResultStatus.NO_MATCH -> MaterialTheme.colorScheme.tertiary
+                                    LocalMetadataRepairResultStatus.FAILED -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(result.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                        Text(result.detail, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = color)
+                                    }
+                                    Text(repairResultLabel(result.status), style = MaterialTheme.typography.labelSmall, color = color)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -305,41 +372,34 @@ internal fun LocalScreen(
         if (tracks.isEmpty()) item { EmptyHint("轻音只扫描系统媒体库或你选择的文件夹，不导入或复制你的文件。") }
         else items(tracks, key = Track::id) { TrackRow(it, onClick = { model.playLocal(it) }) }
     }
-    if (repairDialogVisible) {
+    if (repairPickerVisible) {
         AlertDialog(
-            onDismissRequest = { repairDialogVisible = false },
-            title = { Text("本地音乐信息修复") },
+            onDismissRequest = { repairPickerVisible = false },
+            title = { Text("选择要修复的音乐") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (metadataRepairMessage.isBlank()) "正在检查音频文件的真实标签与内嵌封面…" else metadataRepairMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text("仅对所选文件写入。轻音会先请求系统写入授权，再以严格匹配到的原始歌曲信息补齐标题、歌手、专辑和内嵌封面。", style = MaterialTheme.typography.bodySmall)
-                    if (metadataIssues.isNotEmpty()) {
-                        TextButton(onClick = {
-                            selectedIssueIds = if (selectedIssueIds.size == metadataIssues.size) emptySet() else metadataIssues.map { it.track.id }.toSet()
-                        }) { Text(if (selectedIssueIds.size == metadataIssues.size) "取消全选" else "全选") }
-                        LazyColumn(Modifier.height(300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(metadataIssues, key = { it.track.id }) { issue ->
-                                val selected = issue.track.id in selectedIssueIds
-                                Card(
-                                    modifier = Modifier.fillMaxWidth().clickable {
-                                        selectedIssueIds = if (selected) selectedIssueIds - issue.track.id else selectedIssueIds + issue.track.id
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow),
-                                ) {
-                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Checkbox(checked = selected, onCheckedChange = { checked ->
-                                            selectedIssueIds = if (checked) selectedIssueIds + issue.track.id else selectedIssueIds - issue.track.id
-                                        })
-                                        Column(Modifier.weight(1f)) {
-                                            Text(issue.track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                                            Text(issue.track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            Text("缺少：${issue.summary}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                                        }
+                    Text("仅会修改你勾选的文件。系统随后会请求写入授权；未获得可靠匹配的文件不会被覆盖。", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = {
+                        selectedIssueIds = if (selectedIssueIds.size == metadataIssues.size) emptySet() else metadataIssues.map { it.track.id }.toSet()
+                    }) { Text(if (selectedIssueIds.size == metadataIssues.size) "取消全选" else "全选") }
+                    LazyColumn(Modifier.height(320.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(metadataIssues, key = { it.track.id }) { issue ->
+                            val selected = issue.track.id in selectedIssueIds
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    selectedIssueIds = if (selected) selectedIssueIds - issue.track.id else selectedIssueIds + issue.track.id
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow),
+                            ) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Checkbox(checked = selected, onCheckedChange = { checked ->
+                                        selectedIssueIds = if (checked) selectedIssueIds + issue.track.id else selectedIssueIds - issue.track.id
+                                    })
+                                    Column(Modifier.weight(1f)) {
+                                        Text(issue.track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                                        Text(issue.track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("缺少：${issue.summary}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
@@ -349,17 +409,27 @@ internal fun LocalScreen(
             },
             confirmButton = {
                 TextButton(
-                    enabled = metadataIssues.isNotEmpty() && selectedIssueIds.isNotEmpty(),
+                    enabled = selectedIssueIds.isNotEmpty(),
                     onClick = {
                         val selected = metadataIssues.filter { it.track.id in selectedIssueIds }
-                        repairDialogVisible = false
+                        selectedIssueIds = emptySet()
+                        repairPickerVisible = false
                         model.requestLocalMetadataRepair(selected)
                     },
-                ) { Text("修复 ${selectedIssueIds.size} 首") }
+                ) { Text("开始修复 ${selectedIssueIds.size} 首") }
             },
-            dismissButton = { TextButton(onClick = { repairDialogVisible = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { repairPickerVisible = false }) { Text("取消") } },
         )
     }
+}
+
+private fun repairResultLabel(status: LocalMetadataRepairResultStatus): String = when (status) {
+    LocalMetadataRepairResultStatus.PENDING -> "等待"
+    LocalMetadataRepairResultStatus.MATCHING -> "匹配中"
+    LocalMetadataRepairResultStatus.WRITING -> "写入中"
+    LocalMetadataRepairResultStatus.SUCCESS -> "成功"
+    LocalMetadataRepairResultStatus.NO_MATCH -> "未匹配"
+    LocalMetadataRepairResultStatus.FAILED -> "失败"
 }
 
 @Composable

@@ -52,6 +52,41 @@ data class LocalMetadataIssue(
         }.joinToString(" · ")
 }
 
+enum class LocalMetadataRepairStage {
+    IDLE,
+    SCANNING,
+    READY,
+    AWAITING_PERMISSION,
+    MATCHING,
+    WRITING,
+    VERIFYING,
+    FINISHED,
+}
+
+enum class LocalMetadataRepairResultStatus { PENDING, MATCHING, WRITING, SUCCESS, NO_MATCH, FAILED }
+
+data class LocalMetadataRepairResult(
+    val trackId: String,
+    val title: String,
+    val artist: String,
+    val status: LocalMetadataRepairResultStatus,
+    val detail: String = "",
+)
+
+data class LocalMetadataRepairState(
+    val stage: LocalMetadataRepairStage = LocalMetadataRepairStage.IDLE,
+    val current: Int = 0,
+    val total: Int = 0,
+    val currentTitle: String = "",
+    val message: String = "点击“检查缺失信息”开始",
+    val results: List<LocalMetadataRepairResult> = emptyList(),
+) {
+    val progress: Float get() = if (total <= 0) 0f else current.toFloat() / total.toFloat()
+    val successCount: Int get() = results.count { it.status == LocalMetadataRepairResultStatus.SUCCESS }
+    val failedCount: Int get() = results.count { it.status == LocalMetadataRepairResultStatus.FAILED }
+    val noMatchCount: Int get() = results.count { it.status == LocalMetadataRepairResultStatus.NO_MATCH }
+}
+
 data class DownloadEntry(
     val id: Long,
     val title: String,

@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import im.molan.music.model.LocalMetadataRepairState
 import im.molan.music.model.Track
 import im.molan.music.ui.darkWineScheme
 import im.molan.music.ui.lightWineScheme
@@ -72,10 +73,10 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         val value by model.localMetadataIssues.collectAsStateWithLifecycle()
         value
     } else emptyList()
-    val localMetadataRepairMessage = if (tab == AppTab.LOCAL) {
-        val value by model.localMetadataRepairMessage.collectAsStateWithLifecycle()
+    val localMetadataRepairState = if (tab == AppTab.LOCAL) {
+        val value by model.localMetadataRepairState.collectAsStateWithLifecycle()
         value
-    } else ""
+    } else LocalMetadataRepairState()
     val localRepairWriteUris by model.localRepairWriteUris.collectAsStateWithLifecycle()
     // 应用外壳不再订阅 500ms 进度，避免播放时整页界面持续重组。
     val chromePlayer by model.playback.chromeSnapshot.collectAsStateWithLifecycle()
@@ -231,7 +232,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                             folderUris = settings.customFolderUris,
                             message = scanMessage,
                             metadataIssues = localMetadataIssues,
-                            metadataRepairMessage = localMetadataRepairMessage,
+                            metadataRepairState = localMetadataRepairState,
                             model = model,
                             onRequestPermission = { mediaPermission.launch(permission) },
                             onPickFolder = { customFolder.launch(null) },

@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit
  */
 class LocalMetadataRepairRepository(private val context: Context) {
     data class RepairResult(val local: Track, val source: Track)
+    enum class RepairStep { WRITING_TAGS, VERIFYING, REPLACING_FILE }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -32,11 +33,18 @@ class LocalMetadataRepairRepository(private val context: Context) {
         .build()
     private val workDir = File(context.cacheDir, "local-metadata-repair").apply { mkdirs() }
 
-    suspend fun findIssues(tracks: List<Track>): List<LocalMetadataIssue> = withContext(Dispatchers.IO) {
-        tracks.asSequence()
-            .filter { it.source == Track.Source.LOCAL && it.uri != null }
-            .mapNotNull(::inspect)
-            .toList()
+    suspend fun findIssues(
+        tracks: List<Track>,
+        onProgress: (completed: Int, total: Int, current: Track) -> Unit = { _, _, _ -> },
+    ): List<LocalMetadataIssue> = withContext(Dispatchers.IO) {
+        val localTracks = tracks.filter { it.source == Track.Source.LOCAL && it.uri != null }
+        buildList {
+            localTracks.forEachIndexed { index, track ->
+                onProgress(index, localTracks.size, track)
+                inspect(track)?.let(::add)
+                onProgress(index + 1, localTracks.size, track)
+            }
+        }
     }
 
     private fun inspect(track: Track): LocalMetadataIssue? {
@@ -67,7 +75,11 @@ class LocalMetadataRepairRepository(private val context: Context) {
      * 使用已确认的原始线上曲目修复用户明确选择的本地文件。此函数不会自动运行，
      * 仅由“修复所选”操作触发。
      */
-    suspend fun repair(local: Track, source: Track): RepairResult = withContext(Dispatchers.IO) {
+    suspend fun repair(
+        local: Track,
+        source: Track,
+        onStep: (RepairStep) -> Unit = {},
+    ): RepairResult = withContext(Dispatchers.IO) {
         val targetUri = requireNotNull(local.uri) { "本地文件地址不可用" }
         require(local.source == Track.Source.LOCAL) { "只能修复本地音乐" }
         require(isMeaningful(source.title)) { "未获得可靠的原始歌曲标题" }
@@ -87,8 +99,10 @@ class LocalMetadataRepairRepository(private val context: Context) {
                 FileOutputStream(backup).use { output -> input.copyTo(output) }
             } ?: error("无法读取本地音频，请重新授权文件访问")
             backup.copyTo(tagged, overwrite = true)
-            writeAuthoritativeMetadata(tagged, source)
+            onStep(RepairStep.WRITING_TAGS)
+            writeAuthoritativeMetadata(tagged, source) { onStep(RepairStep.VERIFYING) }
             try {
+                onStep(RepairStep.REPLACING_FILE)
                 overwriteUri(targetUri, tagged)
             } catch (writeError: Throwable) {
                 // 覆盖失败时将原文件恢复，避免用户文件停留在截断或半写入状态。
@@ -108,7 +122,7 @@ class LocalMetadataRepairRepository(private val context: Context) {
         } ?: error("没有写入权限；请在系统授权弹窗中允许修改所选音频")
     }
 
-    private fun writeAuthoritativeMetadata(file: File, source: Track) {
+    private fun writeAuthoritativeMetadata(file: File, source: Track, onVerifying: () -> Unit) {
         val cover = source.artworkUri?.toString()?.let(::downloadArtwork) ?: error("未获得可靠的原始封面")
         try {
             val audio = AudioFileIO.read(file)
@@ -121,6 +135,7 @@ class LocalMetadataRepairRepository(private val context: Context) {
             tag.addField(ArtworkFactory.createArtworkFromFile(cover))
             AudioFileIO.write(audio)
 
+            onVerifying()
             val verified = AudioFileIO.read(file).tag ?: error("写入后未检测到音频标签")
             require(verified.getFirst(FieldKey.TITLE) == source.title) { "标题标签校验失败" }
             require(verified.getFirst(FieldKey.ARTIST) == source.artist) { "歌手标签校验失败" }
