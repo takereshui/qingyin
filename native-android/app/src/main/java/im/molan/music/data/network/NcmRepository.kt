@@ -98,13 +98,21 @@ class NcmRepository(
         track.copy(
             remoteUrl = privateUrl,
             resolvedQuality = null,
-            audioExtension = privateUrl.substringBefore('?').substringAfterLast('.', "mp3"),
+            // URL 可能是无扩展名的 API 路由；不能直接对完整 URL substringAfterLast('.')，
+            // 否则会把域名的 .com/... 误当作音频格式并生成无法写标签的下载文件名。
+            audioExtension = audioExtensionFromUrl(privateUrl),
             resolvedAt = System.currentTimeMillis(),
         )
     }
 
     suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = false)
     suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = true)
+
+    private fun audioExtensionFromUrl(url: String): String {
+        val filePart = url.substringBefore('?').substringAfterLast('/')
+        val suffix = filePart.substringAfterLast('.', "").lowercase()
+        return suffix.takeIf { it in SUPPORTED_AUDIO_EXTENSIONS } ?: "bin"
+    }
 
     suspend fun lyric(settings: AppSettings, track: Track): Pair<String, String> = withContext(Dispatchers.IO) {
         val id = track.id.removePrefix("ncm:")
@@ -220,6 +228,8 @@ class NcmRepository(
             )
         }
     }
+
+    private val SUPPORTED_AUDIO_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "mp4")
 
     private fun JSONArray?.names(): String = buildList {
         if (this@names == null) return@buildList

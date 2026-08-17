@@ -93,8 +93,10 @@ class QqRepository(
             if (rawUrl.isBlank()) continue
 
             val actual = payload.qQQuality()
-            val format = payload.optString("format").lowercase().takeIf(String::isNotBlank)
-                ?: rawUrl.substringBefore('?').substringAfterLast('.', "mp3")
+            val format = normalizeAudioExtension(
+                payload.optString("format"),
+                rawUrl,
+            )
             val cover = payload.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse) ?: track.artworkUri
 
             return@withContext ResolvedQqTrack(
@@ -116,6 +118,17 @@ class QqRepository(
     }
 
     suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolve(settings, track, isDownload = true).track
+
+    private fun normalizeAudioExtension(rawFormat: String, url: String): String {
+        val fromPayload = rawFormat.lowercase()
+            .substringAfterLast('/')
+            .substringAfterLast('.')
+            .takeIf { it in SUPPORTED_AUDIO_EXTENSIONS }
+        if (fromPayload != null) return fromPayload
+        val filePart = url.substringBefore('?').substringAfterLast('/')
+        val fromUrl = filePart.substringAfterLast('.', "").lowercase()
+        return fromUrl.takeIf { it in SUPPORTED_AUDIO_EXTENSIONS } ?: "bin"
+    }
 
     /**
      * 导入公开 QQ 歌单分享链接或纯数字歌单 ID。该读取不使用 QQ 登录和 Cookie。
@@ -253,6 +266,8 @@ class QqRepository(
         /** CDN 约 20min 过期，保守 15min 复用上限 */
         const val REMOTE_URL_TTL_MS = 15L * 60 * 1000
     }
+
+    private val SUPPORTED_AUDIO_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "mp4")
 
     private fun extractPlaylistId(input: String): String {
         val matched = Regex("(?:disstid=|playlist/|taoge/)([0-9]{5,})", RegexOption.IGNORE_CASE).find(input)?.groupValues?.getOrNull(1)

@@ -96,6 +96,8 @@ data class DownloadEntry(
     val totalBytes: Long,
     val fileName: String,
     val errorMessage: String? = null,
+    /** 下载完成后按真实文件签名确认的容器格式；未知时保留为空。 */
+    val containerFormat: String = "",
 ) {
     enum class Status { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED, MISSING }
 }

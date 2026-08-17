@@ -48,6 +48,14 @@ class DownloadRepository(private val context: Context, private val settingsRepos
     /** 完成后的落盘结果：优先 MediaStore Uri，其次真实文件路径。 */
     private data class PublishResult(val mediaUri: String? = null, val finalPath: String? = null)
 
+    /** 下载字节完成后依据真实文件签名确认的容器与元数据处理结果。 */
+    private data class PreparedAudio(
+        val file: File,
+        val task: Task,
+        val containerFormat: String,
+        val notice: String,
+    )
+
     private data class Task(
         val id: Long,
         val title: String,
@@ -67,8 +75,10 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         val mediaUri: String? = null,
         /** 下载完成后的真实文件绝对路径（pre-Q 公共目录或私有兜底）。 */
         val finalPath: String? = null,
+        /** 下载完成后由文件签名确认的实际容器格式。 */
+        val containerFormat: String = "",
     ) {
-        fun toEntry() = DownloadEntry(id, title, artist, status, bytesDownloaded, totalBytes, fileName, errorMessage)
+        fun toEntry() = DownloadEntry(id, title, artist, status, bytesDownloaded, totalBytes, fileName, errorMessage, containerFormat)
     }
 
     private val client = OkHttpClient.Builder()
@@ -254,16 +264,17 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 return@runCatching
             }
             val completedBytes = finalFile.length()
-            writeAuthoritativeAudioMetadata(finalFile, task)
-            val published = publishCompleted(finalFile, task)
+            val prepared = prepareDownloadedAudio(finalFile, task)
+            val published = publishCompleted(prepared.file, prepared.task)
             updateTask(
-                task.copy(
+                prepared.task.copy(
                     status = DownloadEntry.Status.COMPLETED,
                     bytesDownloaded = completedBytes,
                     totalBytes = completedBytes,
-                    errorMessage = null,
+                    errorMessage = prepared.notice,
                     mediaUri = published?.mediaUri,
                     finalPath = published?.finalPath,
+                    containerFormat = prepared.containerFormat,
                 ),
             )
         }.onFailure { error ->
@@ -419,18 +430,19 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 }
                 if (finalFile.exists()) finalFile.delete()
                 require(partFile.renameTo(finalFile)) { "文件重命名失败，请检查存储空间" }
-                // 下载 API 可能返回裸音频；先把歌单/搜索阶段的原始字段写入可写 MP3，再发布到公开目录。
-                writeAuthoritativeAudioMetadata(finalFile, initial)
+                // 先通过真实字节确认容器、规范后缀；不支持标签写入的格式会安全降级而不阻断下载。
+                val prepared = prepareDownloadedAudio(finalFile, initial)
                 // 完成后发布到公共目录（MediaStore / SAF / 公共 Music），让系统媒体库与外部播放器可见。
-                val published = publishCompleted(finalFile, initial)
+                val published = publishCompleted(prepared.file, prepared.task)
                 updateTask(id) {
-                    it.copy(
+                    prepared.task.copy(
                         status = DownloadEntry.Status.COMPLETED,
                         bytesDownloaded = downloaded,
                         totalBytes = if (total > 0L) total else downloaded,
-                        errorMessage = null,
+                        errorMessage = prepared.notice,
                         mediaUri = published?.mediaUri,
                         finalPath = published?.finalPath,
+                        containerFormat = prepared.containerFormat,
                     )
                 }
             }
@@ -445,10 +457,70 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         "${title.trim().lowercase()}|${artist.substringBefore(" · ").trim().lowercase()}"
 
     /**
-     * 下载接口有时仅提供裸 MP3 字节；这里以入队时保存的歌单/搜索原始字段为唯一权威来源。
-     * 文件不再信任下载 API 的标签或封面：所有可写容器都会被原始任务字段覆盖，并在落盘后回读校验。
-     * 写入或校验失败时任务会失败，绝不把缺少权威标签的文件发布到用户目录。
+     * 下载接口可能给出无扩展 API 地址、错误 format 或裸音频字节。完成下载后先依据文件签名
+     * 确认容器并规范后缀；仅确认且标签库支持的容器写入内嵌信息。未知容器照常发布，
+     * 避免“没有对应 Reader”阻断下载任务。
      */
+    private fun prepareDownloadedAudio(file: File, task: Task): PreparedAudio {
+        require(file.isFile && file.length() > 0L) { "下载音频为空，无法处理" }
+        val format = inferContainerExtension(file)
+        val normalizedFile = format?.let { renameToContainerExtension(file, it) } ?: file
+        val normalizedTask = if (normalizedFile.name == task.fileName) task else task.copy(fileName = normalizedFile.name)
+        if (format == null) {
+            return PreparedAudio(
+                file = normalizedFile,
+                task = normalizedTask,
+                containerFormat = "",
+                notice = "已完成：未能确认实际音频容器，已保留原始下载字节，未写入内嵌信息",
+            )
+        }
+        if (format !in TAG_WRITABLE_EXTENSIONS) {
+            return PreparedAudio(
+                file = normalizedFile,
+                task = normalizedTask,
+                containerFormat = format,
+                notice = "已完成：已识别为 ${format.uppercase()}，该容器暂不支持安全写入内嵌信息",
+            )
+        }
+        val notice = runCatching {
+            writeAuthoritativeAudioMetadata(normalizedFile, normalizedTask)
+            "已完成：已识别为 ${format.uppercase()}，标题、歌手、专辑和内嵌封面已写入并校验"
+        }.getOrElse { error ->
+            "已完成：已识别为 ${format.uppercase()}，内嵌信息未写入（${error.message ?: error.javaClass.simpleName}）"
+        }
+        return PreparedAudio(normalizedFile, normalizedTask, format, notice)
+    }
+
+    private fun inferContainerExtension(file: File): String? = runCatching {
+        val header = ByteArray(128)
+        val count = file.inputStream().use { it.read(header) }
+        if (count < 4) return@runCatching null
+        fun startsWith(vararg bytes: Int): Boolean = bytes.indices.all { index ->
+            index < count && (header[index].toInt() and 0xFF) == bytes[index]
+        }
+        when {
+            startsWith(0x49, 0x44, 0x33) -> "mp3" // ID3
+            count >= 2 && (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0 -> "mp3"
+            startsWith(0x66, 0x4C, 0x61, 0x43) -> "flac" // fLaC
+            startsWith(0x4F, 0x67, 0x67, 0x53) -> "ogg" // Ogg / Opus
+            startsWith(0x52, 0x49, 0x46, 0x46) && count >= 12 && String(header, 8, 4, Charsets.US_ASCII) == "WAVE" -> "wav"
+            count >= 12 && String(header, 4, 4, Charsets.US_ASCII) == "ftyp" -> {
+                val brand = String(header, 8, minOf(16, count - 8), Charsets.US_ASCII)
+                if (brand.contains("M4A", ignoreCase = true)) "m4a" else "mp4"
+            }
+            count >= 2 && (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xF6) == 0xF0 -> "aac"
+            else -> null
+        }
+    }.getOrNull()
+
+    private fun renameToContainerExtension(file: File, extension: String): File {
+        if (file.extension.lowercase() == extension) return file
+        val target = File(file.parentFile, "${file.nameWithoutExtension}.$extension")
+        if (target.exists()) target.delete()
+        return if (file.renameTo(target)) target else file
+    }
+
+    /** 以入队时保存的歌单/搜索原始字段覆盖已确认容器的标签和封面，并在落盘后回读校验。 */
     private fun writeAuthoritativeAudioMetadata(file: File, task: Task) {
         require(file.isFile && file.length() > 0L) { "下载音频为空，无法写入元数据" }
         val coverFile = task.artworkUri?.let(::downloadArtworkForTag)
@@ -475,6 +547,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
             coverFile?.delete()
         }
     }
+
+    private val TAG_WRITABLE_EXTENSIONS = setOf("mp3", "flac", "m4a", "mp4", "ogg", "wav")
 
     /** 下载任务已处于 I/O 工作线程；原始歌单封面限制在 4MB 以内并临时落盘供标签库嵌入。 */
     private fun downloadArtworkForTag(url: String): File? {
@@ -566,7 +640,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         "ogg" -> "audio/ogg"
         "opus" -> "audio/opus"
         "wav" -> "audio/wav"
-        else -> "audio/mpeg"
+        "bin" -> "audio/*"
+        else -> "audio/*"
     }
 
     private enum class TaskUpdatePersistence {
@@ -623,7 +698,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                         .put("total", task.totalBytes)
                         .put("error", task.errorMessage.orEmpty())
                         .put("mediaUri", task.mediaUri.orEmpty())
-                        .put("finalPath", task.finalPath.orEmpty()))
+                        .put("finalPath", task.finalPath.orEmpty())
+                        .put("containerFormat", task.containerFormat))
                 }
             }.toString())
         }
@@ -681,6 +757,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                     errorMessage = row.optString("error").takeIf(String::isNotBlank),
                     mediaUri = row.optString("mediaUri").takeIf(String::isNotBlank),
                     finalPath = row.optString("finalPath").takeIf(String::isNotBlank),
+                    containerFormat = row.optString("containerFormat"),
                 ))
             }
         }

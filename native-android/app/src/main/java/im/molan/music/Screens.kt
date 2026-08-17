@@ -495,15 +495,25 @@ internal fun DownloadTaskRow(entry: DownloadEntry, onRetry: () -> Unit, onRemove
                     if (entry.status == DownloadEntry.Status.FAILED) {
                         TextButton(onClick = onRetry) { Text("重试") }
                     } else {
-                        Text(downloadStatusLabel(entry.status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        val label = if (entry.status == DownloadEntry.Status.COMPLETED && entry.containerFormat.isNotBlank()) {
+                            "完成 · ${entry.containerFormat.uppercase()}"
+                        } else {
+                            downloadStatusLabel(entry.status)
+                        }
+                        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                     IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.Delete, "删除下载记录")
                     }
                 }
             }
-            if (entry.status == DownloadEntry.Status.FAILED && !entry.errorMessage.isNullOrBlank()) {
-                Text(entry.errorMessage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp))
+            if (!entry.errorMessage.isNullOrBlank()) {
+                Text(
+                    entry.errorMessage,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (entry.status == DownloadEntry.Status.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
             if (entry.status == DownloadEntry.Status.DOWNLOADING || entry.status == DownloadEntry.Status.QUEUED || entry.status == DownloadEntry.Status.PAUSED) {
                 Spacer(Modifier.height(8.dp))

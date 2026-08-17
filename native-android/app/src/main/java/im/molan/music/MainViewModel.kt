@@ -1273,11 +1273,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun downloadFileSpec(downloadable: Track, original: Track = downloadable): Triple<String, String, String?> {
+        // API 的 format 或无扩展 URL 不能直接作为后缀；只接受可被 Android 和标签库识别的容器。
+        // 其余情况先以 .bin 下载，完成后由下载器根据真实文件签名推断格式。
         val extension = downloadable.audioExtension
             ?.lowercase()
-            ?.replace(Regex("[^a-z0-9]"), "")
-            ?.takeIf(String::isNotBlank)
-            ?: "mp3"
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('.')
+            ?.takeIf { it in SUPPORTED_DOWNLOAD_EXTENSIONS }
+            ?: "bin"
         val qualityLabel = downloadable.resolvedQuality?.label ?: downloadable.resolvedQqQuality?.label ?: settings.value.quality.label
         val fileName = "${original.artist} - ${original.title}.$extension"
         val referer = when (downloadable.source) {
@@ -1287,6 +1290,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         return Triple(fileName, qualityLabel, referer)
     }
+
+    private val SUPPORTED_DOWNLOAD_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "mp4")
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         val current = settings.value
