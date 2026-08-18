@@ -722,18 +722,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val cached = playlistRepository.cachedDetail(playlist.id)
             if (cached != null) {
-                _playlistDetail.value = cached
-                precomputeMatchFlags(cached.tracks)
+                // 兼容旧版本地歌单：旧 JSON 未保存本地 URI，重启后会留下不可播放的 LOCAL/DOWNLOADED 条目。
+                val repaired = cached.copy(tracks = rehydratePlaylistLocalTracks(cached.tracks))
+                if (repaired != cached && playlist.source == Track.Source.LOCAL) {
+                    playlistRepository.syncAsLocalPlaylist(repaired)
+                }
+                _playlistDetail.value = repaired
+                precomputeMatchFlags(repaired.tracks)
                 _playlistMessage.value = "已加载本地歌单，正在同步…"
             } else {
                 _playlistMessage.value = "正在加载 ${playlist.name}…"
             }
             runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
                 .onSuccess { detail ->
-                    _playlistDetail.value = detail
-                    precomputeMatchFlags(detail.tracks)
-                    persistOnlinePlaylistMetadata(detail)
-                    _playlistMessage.value = if (detail.summary.source == Track.Source.LOCAL) "" else "已保存 ${detail.tracks.size} 首曲目到本地歌单缓存；音频不会自动下载"
+                    val repaired = if (detail.summary.source == Track.Source.LOCAL) {
+                        detail.copy(tracks = rehydratePlaylistLocalTracks(detail.tracks))
+                    } else {
+                        detail
+                    }
+                    if (repaired != detail && repaired.summary.source == Track.Source.LOCAL) {
+                        playlistRepository.syncAsLocalPlaylist(repaired)
+                    }
+                    _playlistDetail.value = repaired
+                    precomputeMatchFlags(repaired.tracks)
+                    persistOnlinePlaylistMetadata(repaired)
+                    _playlistMessage.value = if (repaired.summary.source == Track.Source.LOCAL) "" else "已保存 ${repaired.tracks.size} 首曲目到本地歌单缓存；音频不会自动下载"
                 }
                 .onFailure { error ->
                     _playlistMessage.value = if (cached != null) "正在使用本地歌单；同步失败" else error.message ?: "歌单详情加载失败"
@@ -818,12 +831,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun playPlaylist(tracks: List<Track>, selected: Track) {
         if (tracks.isEmpty()) return
-        val startIndex = tracks.indexOfFirst { it.id == selected.id }
+        val hydrated = rehydratePlaylistLocalTracks(tracks)
+        val selectedTrack = hydrated.firstOrNull { it.id == selected.id } ?: return
+        if (selectedTrack.isMissingLocalPlaybackUri()) {
+            _playlistMessage.value = "无法播放《${selected.title}》：本地文件已不存在或尚未完成扫描"
+            return
+        }
+        // 本地文件已被删除、移动或撤销授权时，不再向 Media3 注入伪 qingyin-queue URI；
+        // 其余曲目保持原歌单次序，避免连续错误后看起来像随机跳歌。
+        val queue = hydrated.filterNot { it.isMissingLocalPlaybackUri() }
+        val startIndex = queue.indexOfFirst { it.id == selected.id }
         if (startIndex < 0) return
-        beginLyricSession(selected)
-        playback.playQueue(tracks, startIndex)
-        _playlistMessage.value = "已载入 ${tracks.size} 首 · 正在播放《${selected.title}》"
+        beginLyricSession(selectedTrack)
+        playback.playQueue(queue, startIndex)
+        val skipped = hydrated.size - queue.size
+        _playlistMessage.value = buildString {
+            append("已载入 ${queue.size} 首 · 正在播放《${selectedTrack.title}》")
+            if (skipped > 0) append("；已跳过 $skipped 个找不到的本地文件")
+        }
     }
+
+    /**
+     * 将旧本地歌单中丢失的 URI 按稳定的本地曲目 ID 恢复。只允许精确 ID 命中，
+     * 绝不按标题/歌手模糊替换，避免相似歌曲被错误播放。
+     */
+    private fun rehydratePlaylistLocalTracks(tracks: List<Track>): List<Track> {
+        val currentLocalUris = (_localTracks.value + _downloadedTracks.value)
+            .filter { it.uri != null }
+            .associateBy(Track::id)
+        return tracks.map { track ->
+            if (track.isMissingLocalPlaybackUri()) currentLocalUris[track.id] ?: track else track
+        }
+    }
+
+    private fun Track.isMissingLocalPlaybackUri(): Boolean =
+        (source == Track.Source.LOCAL || source == Track.Source.DOWNLOADED) && uri == null
 
     /** 监听播放器当前项；只有真正切到尚无地址或地址已过期的线上曲目时才进行来源 API 解析。 */
     private fun observeCurrentQueueTrack() {

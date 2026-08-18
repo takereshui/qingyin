@@ -195,6 +195,8 @@ class PlaylistRepository(
             .put("artist", track.artist)
             .put("album", track.album)
             .put("duration", track.durationMs)
+            // 本地/下载曲目的真实 URI 必须随本地歌单持久化；只保留 id 会在重启后失去可播放地址。
+            .put("uri", track.uri?.toString().orEmpty())
             .put("cover", track.artworkUri?.toString().orEmpty())
             .put("source", track.source.name)
             .put("remoteUrl", track.remoteUrl.orEmpty())
@@ -214,6 +216,7 @@ class PlaylistRepository(
             artist = json.optString("artist"),
             album = json.optString("album"),
             durationMs = json.optLong("duration"),
+            uri = json.optString("uri").takeIf(String::isNotBlank)?.let(Uri::parse),
             artworkUri = json.optString("cover").takeIf(String::isNotBlank)?.let(Uri::parse),
             source = runCatching { Track.Source.valueOf(json.optString("source")) }.getOrDefault(Track.Source.NETEASE),
             remoteUrl = json.optString("remoteUrl").takeIf(String::isNotBlank),
