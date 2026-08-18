@@ -100,7 +100,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         "轻音下载",
     )
     private val stateFile = File(context.filesDir, "qingyin-internal-downloads.json")
-    private val _tasks = MutableStateFlow(loadTasks())
+    private val _tasks = MutableStateFlow(migrateLegacyReaderFailures(loadTasks()))
     private val _taskEntries = MutableStateFlow(_tasks.value.map(Task::toEntry).sortedByDescending(DownloadEntry::id))
     val taskEntries: StateFlow<List<DownloadEntry>> = _taskEntries.asStateFlow()
     /** 用户选择的 SAF 下载目录；由设置流实时更新。 */
@@ -182,7 +182,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         val task = _tasks.value.firstOrNull { it.id == id } ?: return
         if (task.status == DownloadEntry.Status.COMPLETED) return
         File(workDir, "${task.fileName}.part").delete()
-        updateTask(task.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = 0L, totalBytes = 0L))
+        // 旧版在标签读取失败后可能留下已下载的最终文件；重试必须清理它，避免复用错误后缀。
+        File(workDir, task.fileName).delete()
+        updateTask(task.copy(status = DownloadEntry.Status.QUEUED, bytesDownloaded = 0L, totalBytes = 0L, errorMessage = null, containerFormat = ""))
         schedule(id)
     }
 
@@ -463,8 +465,8 @@ class DownloadRepository(private val context: Context, private val settingsRepos
      */
     private fun prepareDownloadedAudio(file: File, task: Task): PreparedAudio {
         require(file.isFile && file.length() > 0L) { "下载音频为空，无法处理" }
-        val format = inferContainerExtension(file)
-        val normalizedFile = format?.let { renameToContainerExtension(file, it) } ?: file
+        val format = AudioContainerInspector.detect(file)
+        val normalizedFile = format?.let { AudioContainerInspector.normalizeExtension(file, it) } ?: file
         val normalizedTask = if (normalizedFile.name == task.fileName) task else task.copy(fileName = normalizedFile.name)
         if (format == null) {
             return PreparedAudio(
@@ -474,7 +476,7 @@ class DownloadRepository(private val context: Context, private val settingsRepos
                 notice = "已完成：未能确认实际音频容器，已保留原始下载字节，未写入内嵌信息",
             )
         }
-        if (format !in TAG_WRITABLE_EXTENSIONS) {
+        if (format !in AudioContainerInspector.tagWritableExtensions) {
             return PreparedAudio(
                 file = normalizedFile,
                 task = normalizedTask,
@@ -489,35 +491,6 @@ class DownloadRepository(private val context: Context, private val settingsRepos
             "已完成：已识别为 ${format.uppercase()}，内嵌信息未写入（${error.message ?: error.javaClass.simpleName}）"
         }
         return PreparedAudio(normalizedFile, normalizedTask, format, notice)
-    }
-
-    private fun inferContainerExtension(file: File): String? = runCatching {
-        val header = ByteArray(128)
-        val count = file.inputStream().use { it.read(header) }
-        if (count < 4) return@runCatching null
-        fun startsWith(vararg bytes: Int): Boolean = bytes.indices.all { index ->
-            index < count && (header[index].toInt() and 0xFF) == bytes[index]
-        }
-        when {
-            startsWith(0x49, 0x44, 0x33) -> "mp3" // ID3
-            count >= 2 && (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0 -> "mp3"
-            startsWith(0x66, 0x4C, 0x61, 0x43) -> "flac" // fLaC
-            startsWith(0x4F, 0x67, 0x67, 0x53) -> "ogg" // Ogg / Opus
-            startsWith(0x52, 0x49, 0x46, 0x46) && count >= 12 && String(header, 8, 4, Charsets.US_ASCII) == "WAVE" -> "wav"
-            count >= 12 && String(header, 4, 4, Charsets.US_ASCII) == "ftyp" -> {
-                val brand = String(header, 8, minOf(16, count - 8), Charsets.US_ASCII)
-                if (brand.contains("M4A", ignoreCase = true)) "m4a" else "mp4"
-            }
-            count >= 2 && (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xF6) == 0xF0 -> "aac"
-            else -> null
-        }
-    }.getOrNull()
-
-    private fun renameToContainerExtension(file: File, extension: String): File {
-        if (file.extension.lowercase() == extension) return file
-        val target = File(file.parentFile, "${file.nameWithoutExtension}.$extension")
-        if (target.exists()) target.delete()
-        return if (file.renameTo(target)) target else file
     }
 
     /** 以入队时保存的歌单/搜索原始字段覆盖已确认容器的标签和封面，并在落盘后回读校验。 */
@@ -547,8 +520,6 @@ class DownloadRepository(private val context: Context, private val settingsRepos
             coverFile?.delete()
         }
     }
-
-    private val TAG_WRITABLE_EXTENSIONS = setOf("mp3", "flac", "m4a", "mp4", "ogg", "wav")
 
     /** 下载任务已处于 I/O 工作线程；原始歌单封面限制在 4MB 以内并临时落盘供标签库嵌入。 */
     private fun downloadArtworkForTag(url: String): File? {
@@ -731,6 +702,31 @@ class DownloadRepository(private val context: Context, private val settingsRepos
         } else if (!hasActive && serviceActive) {
             serviceActive = false
             runCatching { DownloadService.stop(context.applicationContext) }
+        }
+    }
+
+    /**
+     * 旧版本会把标签库的 “No Reader associated with this extension” 直接标为下载失败。
+     * 新版本已通过文件签名分流并隔离标签失败，因此仅迁移这类历史记录以自动重新下载。
+     */
+    private fun migrateLegacyReaderFailures(tasks: List<Task>): List<Task> {
+        val readerFailure = "No Reader associated with this extension"
+        return tasks.map { task ->
+            if (task.status == DownloadEntry.Status.FAILED &&
+                task.errorMessage?.contains(readerFailure, ignoreCase = true) == true
+            ) {
+                File(workDir, task.fileName).delete()
+                File(workDir, "${task.fileName}.part").delete()
+                task.copy(
+                    status = DownloadEntry.Status.QUEUED,
+                    errorMessage = "已应用新版容器检测，正在重新下载",
+                    bytesDownloaded = 0L,
+                    totalBytes = 0L,
+                    containerFormat = "",
+                )
+            } else {
+                task
+            }
         }
     }
 
