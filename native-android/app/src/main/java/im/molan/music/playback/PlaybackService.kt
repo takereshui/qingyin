@@ -41,16 +41,9 @@ class PlaybackService : MediaSessionService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>
         ): ListenableFuture<List<MediaItem>> {
-            val updatedItems = mediaItems.map { item ->
-                if (item.mediaMetadata.artworkData != null || item.mediaMetadata.artworkUri == null) {
-                    item
-                } else {
-                    // 先按原样入队以保证起播速度；位图加载成功后再通过 replaceMediaItem 更新。
-                    fetchArtworkAndCover(mediaSession, item)
-                    item
-                }
-            }
-            return Futures.immediateFuture(updatedItems)
+            // 入队可能一次包含数百首歌；通知只会展示当前曲目，不能在此为整条队列并发下载和解码封面。
+            // 当前曲目切换时由 Player.Listener 按需加载，再原位更新其 MediaItem。
+            return Futures.immediateFuture(mediaItems)
         }
 
         /** 支持 Android 13+ 系统的媒体控件恢复播放（Playback Resumption） */
@@ -61,10 +54,10 @@ class PlaybackService : MediaSessionService() {
             val player = mediaSession.player
             val items = mutableListOf<MediaItem>()
             for (i in 0 until player.mediaItemCount) {
-                val item = player.getMediaItemAt(i)
-                items.add(item)
-                if (item.mediaMetadata.artworkData == null) fetchArtworkAndCover(mediaSession, item)
+                items.add(player.getMediaItemAt(i))
             }
+            // 系统恢复播放时同样只需要当前通知项的封面。
+            player.currentMediaItem?.let { fetchArtworkAndCover(mediaSession, it) }
             return Futures.immediateFuture(
                 MediaSession.MediaItemsWithStartPosition(items, player.currentMediaItemIndex, player.currentPosition)
             )
@@ -72,30 +65,33 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun fetchArtworkAndCover(session: MediaSession, item: MediaItem) {
+        if (item.mediaMetadata.artworkData != null) return
         val uri = item.mediaMetadata.artworkUri ?: return
         serviceScope.launch {
             val bitmap = loadBitmap(uri.toString()) ?: return@launch
-            val stream = java.io.ByteArrayOutputStream()
-            if (bitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)) {
-                val data = stream.toByteArray()
-                withContext(Dispatchers.Main) {
-                    // 服务可能已被销毁（onDestroy 已 release player），此时再遍历会抛 IllegalStateException。
-                    if (serviceDestroyed) return@withContext
-                    runCatching {
-                        val player = session.player
-                        // 遍历寻找队列中匹配的项并更新其元数据（注入位图数据）
-                        for (i in 0 until player.mediaItemCount) {
-                            val currentItem = player.getMediaItemAt(i)
-                            if (currentItem.mediaId == item.mediaId) {
-                                val newMetadata = currentItem.mediaMetadata.buildUpon()
-                                    .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                    .build()
-                                val newItem = currentItem.buildUpon()
-                                    .setMediaMetadata(newMetadata)
-                                    .build()
-                                // 仅当该项仍在队列中时进行原位替换
-                                player.replaceMediaItem(i, newItem)
-                            }
+            // JPEG 编码是 CPU 密集操作；播放服务的协程主调度器只负责与 Media3 交互。
+            val data = withContext(Dispatchers.Default) {
+                java.io.ByteArrayOutputStream().use { stream ->
+                    if (bitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)) stream.toByteArray() else null
+                }
+            } ?: return@launch
+            withContext(Dispatchers.Main) {
+                // 服务可能已被销毁（onDestroy 已 release player），此时再遍历会抛 IllegalStateException。
+                if (serviceDestroyed) return@withContext
+                runCatching {
+                    val player = session.player
+                    // 遍历寻找队列中匹配的项并更新其元数据（注入位图数据）。
+                    for (i in 0 until player.mediaItemCount) {
+                        val currentItem = player.getMediaItemAt(i)
+                        if (currentItem.mediaId == item.mediaId) {
+                            val newMetadata = currentItem.mediaMetadata.buildUpon()
+                                .setArtworkData(data, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                                .build()
+                            val newItem = currentItem.buildUpon()
+                                .setMediaMetadata(newMetadata)
+                                .build()
+                            // 仅当该项仍在队列中时进行原位替换。
+                            player.replaceMediaItem(i, newItem)
                         }
                     }
                 }
@@ -151,6 +147,11 @@ class PlaybackService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(sessionCallback)
             .build()
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                mediaItem?.let { item -> mediaSession?.let { session -> fetchArtworkAndCover(session, item) } }
+            }
+        })
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
