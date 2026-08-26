@@ -599,8 +599,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _dailyMessage.value = if (force) "正在刷新每日推荐…" else "正在同步每日推荐…"
             }
-            // 每次打开均从线上同步；成功后 DailyRepository 会覆盖本地持久化缓存。
-            runCatching { dailyRepository.get(settings.value, force = true) }
+            // 仅在用户主动刷新时强制走网络；其余场景遵循仓库 TTL，降低重复请求与首屏抖动。
+            runCatching { dailyRepository.get(settings.value, force = force) }
                 .onSuccess { tracks ->
                     if (tracks.isNotEmpty()) {
                         _dailyTracks.value = tracks
@@ -633,8 +633,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _playlistMessage.value = if (force) "正在刷新我的歌单…" else "正在同步我的歌单…"
             }
-            // 每次登录或打开时拉取线上目录；失败则继续保留本地列表。
-            runCatching { playlistRepository.playlists(current, current.ncmUserId, force = true) }
+            // 仅主动刷新时强制拉取线上目录；其余场景命中新鲜缓存直接返回，过期时再同步。
+            runCatching { playlistRepository.playlists(current, current.ncmUserId, force = force) }
                 .onSuccess { list ->
                     if (list.isNotEmpty()) _myPlaylists.value = list
                     _playlistMessage.value = when {
@@ -692,9 +692,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val cached = playlistRepository.cachedImported(settings.value.importedPlaylistIds)
             _importedPlaylists.value = cached
-            // 已导入的网易云和 QQ 歌单均以本地详情先展示，再逐个刷新到本地。
+            // 已导入歌单先展示本地详情；仅在缓存过期后再逐个同步，避免启动时无差别打满网络请求。
             cached.forEach { summary ->
-                runCatching { playlistRepository.detail(settings.value, summary, force = true) }
+                runCatching { playlistRepository.detail(settings.value, summary, force = false) }
                     .onSuccess { detail ->
                         _importedPlaylists.value = _importedPlaylists.value
                             .filterNot { it.id == detail.summary.id } + detail.summary
@@ -733,7 +733,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _playlistMessage.value = "正在加载 ${playlist.name}…"
             }
-            runCatching { playlistRepository.detail(settings.value, playlist, force = true) }
+            runCatching { playlistRepository.detail(settings.value, playlist, force = force) }
                 .onSuccess { detail ->
                     val repaired = if (detail.summary.source == Track.Source.LOCAL) {
                         detail.copy(tracks = rehydratePlaylistLocalTracks(detail.tracks))
