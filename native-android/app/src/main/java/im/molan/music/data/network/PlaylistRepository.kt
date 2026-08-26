@@ -7,11 +7,14 @@ import im.molan.music.model.PlaylistDetail
 import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
 class PlaylistRepository(
@@ -23,6 +26,8 @@ class PlaylistRepository(
     private val listTtlMs = 6L * 60 * 60 * 1000
     private val detailTtlMs = 12L * 60 * 60 * 1000
     private val localListKey = "local-playlists"
+    private val listFetchMutex = Mutex()
+    private val detailFetchMutex = ConcurrentHashMap<String, Mutex>()
 
     suspend fun localPlaylists(): List<PlaylistSummary> = withContext(Dispatchers.IO) { readLocalSummaries() }
 
@@ -104,26 +109,37 @@ class PlaylistRepository(
     }
 
     suspend fun playlists(settings: AppSettings, userId: Long, force: Boolean = false): List<PlaylistSummary> = withContext(Dispatchers.IO) {
-        val cached = readList(userId)?.second.orEmpty()
-        if (!force && cached.isNotEmpty()) return@withContext cached
-        runCatching { ncm.userPlaylists(settings, userId) }
-            .onSuccess { result -> if (result.isNotEmpty()) writeList(userId, result) }
-            .getOrElse { error ->
-                if (cached.isNotEmpty()) cached else throw error
-            }
+        val cached = readList(userId)
+        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext cached.second
+        listFetchMutex.withLock {
+            val latestCached = readList(userId)
+            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock latestCached.second
+            runCatching { ncm.userPlaylists(settings, userId) }
+                .onSuccess { result -> writeList(userId, result) }
+                .getOrElse { error ->
+                    val fallback = latestCached?.second ?: cached?.second
+                    if (!fallback.isNullOrEmpty()) fallback else throw error
+                }
+        }
     }
 
     suspend fun detail(settings: AppSettings, playlist: PlaylistSummary, force: Boolean = false): PlaylistDetail = withContext(Dispatchers.IO) {
-        val cached = readDetail(playlist.id)?.second
-        if (!force && cached != null) return@withContext cached
-        runCatching {
-            when (playlist.source) {
-                Track.Source.LOCAL -> cached ?: PlaylistDetail(playlist, emptyList())
-                Track.Source.QQ -> qq.publicPlaylist(playlist.id)
-                else -> ncm.playlistDetail(settings, playlist.id)
-            }
-        }.onSuccess { result -> writeDetail(playlist.id, result) }
-            .getOrElse { error -> cached ?: throw error }
+        val cached = readDetail(playlist.id)
+        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext cached.second
+        val mutex = detailFetchMutex.getOrPut(playlist.id) { Mutex() }
+        mutex.withLock {
+            val latestCached = readDetail(playlist.id)
+            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock latestCached.second
+            val fallback = latestCached?.second ?: cached?.second
+            runCatching {
+                when (playlist.source) {
+                    Track.Source.LOCAL -> fallback ?: PlaylistDetail(playlist, emptyList())
+                    Track.Source.QQ -> qq.publicPlaylist(playlist.id)
+                    else -> ncm.playlistDetail(settings, playlist.id)
+                }
+            }.onSuccess { result -> writeDetail(playlist.id, result) }
+                .getOrElse { error -> fallback ?: throw error }
+        }
     }
 
     suspend fun import(settings: AppSettings, source: Track.Source, input: String): PlaylistDetail = withContext(Dispatchers.IO) {
