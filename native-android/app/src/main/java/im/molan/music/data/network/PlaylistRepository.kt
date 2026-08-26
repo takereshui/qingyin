@@ -110,10 +110,10 @@ class PlaylistRepository(
 
     suspend fun playlists(settings: AppSettings, userId: Long, force: Boolean = false): List<PlaylistSummary> = withContext(Dispatchers.IO) {
         val cached = readList(userId)
-        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext cached.second
+        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext requireNotNull(cached).second
         listFetchMutex.withLock {
             val latestCached = readList(userId)
-            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock latestCached.second
+            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock requireNotNull(latestCached).second
             runCatching { ncm.userPlaylists(settings, userId) }
                 .onSuccess { result -> writeList(userId, result) }
                 .getOrElse { error ->
@@ -125,11 +125,11 @@ class PlaylistRepository(
 
     suspend fun detail(settings: AppSettings, playlist: PlaylistSummary, force: Boolean = false): PlaylistDetail = withContext(Dispatchers.IO) {
         val cached = readDetail(playlist.id)
-        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext cached.second
+        if (PlaylistCachePolicy.shouldServeFromCache(force, cached)) return@withContext requireNotNull(cached).second
         val mutex = detailFetchMutex.getOrPut(playlist.id) { Mutex() }
         mutex.withLock {
             val latestCached = readDetail(playlist.id)
-            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock latestCached.second
+            if (PlaylistCachePolicy.shouldServeFromCache(force, latestCached)) return@withLock requireNotNull(latestCached).second
             val fallback = latestCached?.second ?: cached?.second
             runCatching {
                 when (playlist.source) {
