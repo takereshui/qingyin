@@ -96,6 +96,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import im.molan.music.data.lyrics.LrcParser
 import im.molan.music.model.AppSettings
 import java.io.File
 import im.molan.music.model.DownloadEntry
@@ -150,7 +151,8 @@ internal fun QueueDialog(
     modifier: Modifier = Modifier,
     onDismiss: () -> Unit,
 ) {
-    val snapshot by model.playback.snapshot.collectAsStateWithLifecycle()
+    // 队列只依赖曲目结构、当前索引与播放模式；禁止订阅 500ms 位置更新。
+    val snapshot by model.playback.chromeSnapshot.collectAsStateWithLifecycle()
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -173,8 +175,7 @@ internal fun QueueDialog(
             }
             HorizontalDivider()
             LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth()) {
-                items(snapshot.queue, key = Track::id) { track ->
-                    val index = snapshot.queue.indexOf(track)
+                itemsIndexed(snapshot.queue, key = { _, track -> track.id }) { index, track ->
                     Row(
                         Modifier.fillMaxWidth().clickable { model.playback.playQueue(snapshot.queue, index) }.padding(vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -340,7 +341,7 @@ internal fun FullPlayerDialog(lyrics: List<LyricLine>, playbackError: String, do
 private fun LyricsGlassPanel(lyrics: List<LyricLine>, model: MainViewModel, isVisible: Boolean) {
     val activeLine by remember(lyrics) {
         model.playback.snapshot
-            .map { snapshot -> lyrics.indexOfLast { it.timeMs <= snapshot.positionMs + 80 } }
+            .map { snapshot -> LrcParser.indexAt(lyrics, snapshot.positionMs) }
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = -1)
     val lyricListState = rememberLazyListState()
