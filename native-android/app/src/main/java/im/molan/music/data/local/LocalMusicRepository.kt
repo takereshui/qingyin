@@ -104,9 +104,22 @@ class LocalMusicRepository(private val context: Context) {
         runCatching {
             val json = JSONObject(indexFile().readText())
             val items = json.optJSONArray("items") ?: JSONArray()
-            buildList { for (i in 0 until items.length()) items.optJSONObject(i)?.let { decodeTrack(it)?.let(::add) } }
+            buildList {
+                for (i in 0 until items.length()) {
+                    items.optJSONObject(i)?.let { decodeTrack(it) }?.takeIf { isReadableUri(it.uri) }?.let(::add)
+                }
+            }
         }.getOrDefault(emptyList())
     }
+
+    /** 冷启动索引不能把已删除或已失去 SAF 授权的 URI 展示成可播放歌曲。 */
+    private fun isReadableUri(uri: Uri?): Boolean = runCatching {
+        when (uri?.scheme?.lowercase()) {
+            "file" -> uri.path?.let(::File)?.isFile == true
+            "content" -> context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length != 0L || it.fileDescriptor.valid() } == true
+            else -> false
+        }
+    }.getOrDefault(false)
 
     private fun encodeTrack(track: Track) = JSONObject()
         .put("id", track.id)

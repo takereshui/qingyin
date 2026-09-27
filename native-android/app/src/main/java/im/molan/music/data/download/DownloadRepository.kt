@@ -306,7 +306,9 @@ class DownloadRepository(private val context: Context, private val settingsRepos
 
     /** 已下载曲目按优先级取地址：MediaStore/SAF Uri → 完成路径 → 当前工作目录 → 旧版私有目录。 */
     private fun Task.toDownloadedTrack(): Track? {
-        val playableUri = mediaUri?.takeIf(String::isNotBlank)?.let(Uri::parse)
+        // MediaStore/SAF URI 可能因用户删除文件、撤销目录授权或系统媒体库重建而失效。
+        // 旧实现只判断 URI 字符串非空，导致失效 URI 抢占回退路径，已存在的本地副本也无法播放。
+        val playableUri = mediaUri?.takeIf(String::isNotBlank)?.let(Uri::parse)?.takeIf(::isReadableUri)
             ?: (finalPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
                 ?: File(workDir, fileName).takeIf { it.isFile && it.length() > 0L }
                 ?: File(legacyDir, fileName).takeIf { it.isFile && it.length() > 0L }
@@ -336,6 +338,15 @@ class DownloadRepository(private val context: Context, private val settingsRepos
     )
 
     /** 下载音频可能自带 ID3/FLAC 标签；读取它们补全旧任务，并让封面提取走同一真实文件 URI。 */
+    /** 对 content/file URI 做一次轻量可读性检查，避免把陈旧 URI 交给 ExoPlayer。 */
+    private fun isReadableUri(uri: Uri): Boolean = runCatching {
+        when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let(::File)?.isFile == true
+            "content" -> context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length != 0L || it.fileDescriptor.valid() } == true
+            else -> false
+        }
+    }.getOrDefault(false)
+
     private fun readEmbeddedMetadata(uri: Uri): EmbeddedMetadata {
         val retriever = MediaMetadataRetriever()
         return try {
