@@ -18,8 +18,13 @@ function createWindow() {
     },
   });
 
-  const indexPath = path.join(__dirname, '..', 'legacy-webview', 'app', 'index.html');
-  window.loadFile(indexPath);
+  // webapp is copied into the packaged app, so this path also works inside app.asar.
+  const indexPath = path.join(__dirname, 'webapp', 'index.html');
+  window.loadFile(indexPath).catch((error) => {
+    window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(
+      `<h2 style="font-family:sans-serif;color:#fff;background:#170d17;padding:32px">轻音启动失败</h2><pre style="white-space:pre-wrap;color:#fbb">${String(error)}</pre>`,
+    )}`);
+  });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);

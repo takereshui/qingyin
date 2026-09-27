@@ -8,7 +8,9 @@
   "author": "Qingyin",
   "scripts": {
     "start": "electron .",
-    "dist:win": "electron-builder --win nsis --x64"
+    "dist:win": "electron-builder --win nsis --x64",
+    "sync:webapp": "node sync-webapp.mjs",
+    "predist:win": "npm run sync:webapp"
   },
   "devDependencies": {
     "electron": "^36.3.2",
@@ -23,13 +25,16 @@
     },
     "files": [
       "main.js",
-      "../legacy-webview/app/**/*"
+      "sync-webapp.mjs",
+      "webapp/**/*"
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "qingyin-pc-${version}-setup.${ext}"
