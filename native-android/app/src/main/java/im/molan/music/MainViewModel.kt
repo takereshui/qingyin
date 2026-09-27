@@ -856,11 +856,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 绝不按标题/歌手模糊替换，避免相似歌曲被错误播放。
      */
     private fun rehydratePlaylistLocalTracks(tracks: List<Track>): List<Track> {
-        val currentLocalUris = (_localTracks.value + _downloadedTracks.value)
+        val currentLocalTracks = (_localTracks.value + _downloadedTracks.value)
             .filter { it.uri != null }
             .associateBy(Track::id)
         return tracks.map { track ->
-            if (track.isMissingLocalPlaybackUri()) currentLocalUris[track.id] ?: track else track
+            if (track.source != Track.Source.LOCAL && track.source != Track.Source.DOWNLOADED) {
+                track
+            } else {
+                // 旧歌单可能持有已删除文件、撤销授权后的 SAF URI 或旧下载发布地址。
+                // 当前扫描索引是权威来源：命中则替换为最新 URI，未命中则清空地址，后续播放会明确跳过。
+                currentLocalTracks[track.id] ?: track.copy(uri = null)
+            }
         }
     }
 
