@@ -1,0 +1,45 @@
+{
+  "name": "qingyin-pc",
+  "productName": "轻音",
+  "version": "1.1.1",
+  "description": "轻音 PC 音乐播放器",
+  "private": true,
+  "main": "main.js",
+  "author": "Qingyin",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^36.3.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "im.molan.qingyin.pc",
+    "productName": "轻音",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "../legacy-webview/app/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "qingyin-pc-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "轻音"
+    }
+  }
+}
