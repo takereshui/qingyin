@@ -55,7 +55,9 @@ class PlaybackConnection(context: Context) {
             }
         }
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-            _errorMessage.value = "在线音源播放失败：${error.errorCodeName}"
+            // 保留稳定的 Media3 错误码，ViewModel 才能区分可重新解析的网络/HTTP 错误
+            // 与不可通过刷新 URL 修复的解码错误。
+            _errorMessage.value = "在线音源播放失败：${error.errorCodeName} (${error.errorCode})"
             publish(controller)
         }
     }
@@ -129,6 +131,7 @@ class PlaybackConnection(context: Context) {
     fun replaceCurrentAndPlay(track: Track) {
         val mediaController = controller ?: return
         val index = mediaController.currentMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
+        _errorMessage.value = ""
         mediaController.replaceMediaItem(index, track.toMediaItem())
         queueVersion++
         if (index in cachedQueue.indices) {

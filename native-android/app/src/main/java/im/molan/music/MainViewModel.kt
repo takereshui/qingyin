@@ -898,7 +898,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (msg.isBlank()) return@collect
                 val current = playback.snapshot.value.current ?: return@collect
                 if (current.source != Track.Source.NETEASE && current.source != Track.Source.QQ) return@collect
-                if (!msg.contains("IO_NETWORK") && !msg.contains("网络")) return@collect
+                // CDN 过期/限流通常返回 BAD_HTTP_STATUS 或 FILE_NOT_FOUND，不一定带 IO_NETWORK。
+                // 所有 Media3 ERROR_CODE_IO_* 都可以通过重新解析 URL 尝试恢复；解码错误不重试。
+                if (!msg.contains("ERROR_CODE_IO_") && !msg.contains("IO_NETWORK") && !msg.contains("网络")) return@collect
                 if (lastAutoReresolveId == current.id) return@collect
                 lastAutoReresolveId = current.id
                 resolveCurrentQueueTrack(current.copy(remoteUrl = null, resolvedAt = 0L))
