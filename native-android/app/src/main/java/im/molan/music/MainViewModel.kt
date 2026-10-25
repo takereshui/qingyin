@@ -480,8 +480,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val keyword = TrackMatcher.searchKeys(local).firstOrNull()
             ?: local.localFileName?.substringBeforeLast('.')?.trim().orEmpty()
         if (keyword.length < 2) return null
-        val ncmCandidates = runCatching { ncmRepository.search(settings.value, keyword) }.getOrDefault(emptyList())
-        selectRepairCandidate(local, ncmCandidates)?.let { return it }
         val qqCandidates = runCatching { qqRepository.search(settings.value, keyword) }.getOrDefault(emptyList())
         return selectRepairCandidate(local, qqCandidates)
     }
@@ -797,8 +795,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _networkMessage.value = "正在搜索${if (source == Track.Source.QQ) " QQ 音乐" else "网易云音乐"}…"
             val result = when (source) {
-                Track.Source.QQ -> runCatching { qqRepository.search(settings.value, keyword.trim()) }
-                else -> runCatching { ncmRepository.search(settings.value, keyword.trim()) }
+                else -> runCatching { qqRepository.search(settings.value, keyword.trim()) }
             }
             result.onSuccess { tracks ->
                 val (ordered, localReady) = withContext(Dispatchers.Default) {
@@ -810,10 +807,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _networkMessage.value = when {
                     tracks.isEmpty() -> "未找到相关歌曲"
                     localReady > 0 -> "找到 ${tracks.size} 首歌曲，其中 ${localReady} 首可直接本地播放"
-                    else -> "找到 ${tracks.size} 首${if (source == Track.Source.QQ) " QQ" else "网易云"}歌曲"
+                    else -> "找到 ${tracks.size} 首 QQ 歌曲"
                 }
             }.onFailure { error ->
-                _networkMessage.value = "搜索失败：${error.message ?: if (source == Track.Source.QQ) "QQ API 不可用或未配置 Key" else "NCMC 不可用"}"
+                _networkMessage.value = "搜索失败：${error.message ?: "QQ API 不可用或未配置 Key"}"
             }
         }
     }
@@ -937,7 +934,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withTimeout(25_000L) {
                     findLocalMatch(track)?.let { return@withTimeout it.local to it }
                     val resolved = when (track.source) {
-                        Track.Source.NETEASE -> ncmRepository.resolvePlayback(settings.value, track)
+                        Track.Source.NETEASE -> error("网易云 NCMC 功能已移除，请使用 QQ 搜索")
                         Track.Source.QQ -> qqRepository.resolve(settings.value, track).let { response ->
                             if (response.lyric.isNotBlank()) lyricsRepository.save(response.track, response.lyric)
                             response.track
@@ -1052,18 +1049,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun playNetease(track: Track, message: MutableStateFlow<String>) {
-        viewModelScope.launch {
-            message.value = "正在解析《${track.title}》的播放地址…"
-            runCatching { ncmRepository.resolvePlayback(settings.value, track) }
-                .onSuccess { playable ->
-                    playback.playQueue(listOf(playable), 0)
-                    message.value = "正在播放：${playable.title} · ${playable.resolvedQuality?.label ?: "备用线路"}"
-                    loadLyrics(playable)
-                }
-                .onFailure { error ->
-                    message.value = "无法播放《${track.title}》：${error.message ?: "没有可播放地址"}"
-                }
-        }
+        message.value = "无法播放《${track.title}》：网易云 NCMC 功能已移除，请使用 QQ 搜索"
     }
 
     /** 在任何播放入口切歌前立即清空上一首歌词，并创建新的受控歌词会话。 */
@@ -1284,7 +1270,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun resolveDownloadTrack(track: Track): Track = when (track.source) {
-        Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
+        Track.Source.NETEASE -> error("网易云 NCMC 功能已移除，请使用 QQ 搜索")
         Track.Source.QQ -> qqRepository.resolveDownload(settings.value, track)
         else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
     }

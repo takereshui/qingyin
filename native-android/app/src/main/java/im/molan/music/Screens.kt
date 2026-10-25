@@ -202,12 +202,11 @@ internal fun HomeScreen(
 @Composable
 internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackError: String, matchFlags: Map<String, Boolean>, model: MainViewModel) {
     var query by remember { mutableStateOf("") }
-    var source by remember { mutableStateOf(Track.Source.NETEASE) }
+    var source by remember { mutableStateOf(Track.Source.QQ) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text("线上搜索", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { source = Track.Source.NETEASE }, modifier = Modifier.height(40.dp)) { Text(if (source == Track.Source.NETEASE) "网易云 ✓" else "网易云") }
                 FilledTonalButton(onClick = { source = Track.Source.QQ }, modifier = Modifier.height(40.dp)) { Text(if (source == Track.Source.QQ) "QQ 音乐 ✓" else "QQ 音乐") }
             }
         }
@@ -226,7 +225,7 @@ internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackEr
         }
         item {
             Text(
-                if (source == Track.Source.QQ) "QQ 使用 ChKSz API 与独立 QQ 音质档位；请先在设置中填写 API Key。" else "网易云音源使用 ChKSz API 与独立网易云音质档位；NCMC 仅提供搜索、歌单和歌词等数据服务。",
+                "QQ 搜索结果通过 ChKSz 解析播放和下载；请先在设置中填写 ChKSz API Key。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -538,7 +537,7 @@ internal fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage
         }
         if (playlistMessage.isNotBlank()) item { Text(playlistMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { Text("线上歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        if (online.isEmpty()) item { EmptyHint("登录网易云或导入 QQ / 网易云歌单后，会在这里同步显示。") }
+        if (online.isEmpty()) item { EmptyHint("导入公开 QQ 歌单后，会在这里同步显示。") }
         items(online.chunked(2), key = { pair -> pair.joinToString("-") { it.id } }) { pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 pair.forEach { playlist -> PlaylistCard(playlist, Modifier.weight(1f), onClick = { model.openPlaylist(playlist) }, onRefresh = { model.openPlaylist(playlist, force = true) }, onSync = { model.syncPlaylistToLocal(playlist) }) }
@@ -557,7 +556,7 @@ internal fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage
 }
 
 @Composable
-internal fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin: () -> Unit, onNcmAccount: () -> Unit, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
+internal fun MineScreen(settings: AppSettings, model: MainViewModel, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -566,24 +565,13 @@ internal fun MineScreen(settings: AppSettings, model: MainViewModel, onNcmLogin:
             }
         }
         item {
-            FilledTonalButton(
-                onClick = if (settings.ncmCookie.isBlank()) onNcmLogin else onNcmAccount,
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-            ) {
-                Icon(Icons.Default.AccountCircle, null, Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (settings.ncmCookie.isBlank()) "登录网易云音乐" else "网易云 · ${settings.ncmNickname.ifBlank { "已登录" }}")
-            }
-        }
-        item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                FilledTonalButton(onClick = { onImportPlaylist(Track.Source.NETEASE) }, modifier = Modifier.weight(1f).height(44.dp)) { Text("导入网易云歌单") }
-                FilledTonalButton(onClick = { onImportPlaylist(Track.Source.QQ) }, modifier = Modifier.weight(1f).height(44.dp)) { Text("导入 QQ 歌单") }
+                FilledTonalButton(onClick = { onImportPlaylist(Track.Source.QQ) }, modifier = Modifier.fillMaxWidth().height(44.dp)) { Text("导入 QQ 歌单") }
             }
         }
         item {
             Card(shape = RoundedCornerShape(16.dp)) {
-                Text("歌单已移动到下方独立的“歌单”入口。这里保留账号、导入、设置和赞赏功能。", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("歌单已移动到下方独立的“歌单”入口。这里保留 QQ 歌单导入、设置和赞赏功能。", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth().height(44.dp)) { Text("赞赏支持") } }

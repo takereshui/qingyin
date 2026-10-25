@@ -86,7 +86,6 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val dailyMessage by model.dailyMessage.collectAsStateWithLifecycle()
     val networkMessage by model.networkMessage.collectAsStateWithLifecycle()
     val lyrics by model.lyrics.collectAsStateWithLifecycle()
-    val ncmQrLogin by model.ncmQrLogin.collectAsStateWithLifecycle()
     val myPlaylists by model.myPlaylists.collectAsStateWithLifecycle()
     val importedPlaylists by model.importedPlaylists.collectAsStateWithLifecycle()
     val localPlaylists by model.localPlaylists.collectAsStateWithLifecycle()
@@ -110,10 +109,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     val homePlaylists = (myPlaylists + importedPlaylists + localPlaylists).distinctBy { it.id }
     var queueVisible by rememberSaveable { mutableStateOf(false) }
     var playerVisible by rememberSaveable { mutableStateOf(false) }
-    var ncmLoginVisible by rememberSaveable { mutableStateOf(false) }
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
     var donateVisible by rememberSaveable { mutableStateOf(false) }
-    var ncmAccountVisible by rememberSaveable { mutableStateOf(false) }
     var playlistImportSource by rememberSaveable { mutableStateOf<Track.Source?>(null) }
     var localPlaylistCreateVisible by rememberSaveable { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -150,8 +147,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         uri?.let(model::setDownloadFolder)
     }
 
-    val overlayOpen = queueVisible || playerVisible || ncmLoginVisible || settingsVisible ||
-        donateVisible || ncmAccountVisible || playlistImportSource != null || localPlaylistCreateVisible
+    val overlayOpen = queueVisible || playerVisible || settingsVisible ||
+        donateVisible || playlistImportSource != null || localPlaylistCreateVisible
     val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
     // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
     BackHandler(enabled = !atRoot) {
@@ -159,10 +156,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             playerVisible -> playerVisible = false
             queueVisible -> queueVisible = false
             playlistDetail != null -> model.closePlaylist()
-            ncmLoginVisible -> { ncmLoginVisible = false; model.cancelNcmQrLogin() }
             settingsVisible -> settingsVisible = false
             donateVisible -> donateVisible = false
-            ncmAccountVisible -> ncmAccountVisible = false
             playlistImportSource != null -> playlistImportSource = null
             localPlaylistCreateVisible -> localPlaylistCreateVisible = false
             else -> tab = AppTab.HOME
@@ -176,8 +171,6 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) { model.scanLocalMusic(); model.refreshDownloads() }
     LaunchedEffect(settings.importedPlaylistIds) { model.loadImportedPlaylists() }
     LaunchedEffect(settings.customFolderUris) { model.restoreCustomFolders(settings.customFolderUris) }
-    LaunchedEffect(settings.ncmCookie, settings.useBackupNcmc) { model.loadDaily() }
-    LaunchedEffect(settings.ncmCookie, settings.ncmUserId, settings.useBackupNcmc) { model.loadMyPlaylists() }
 
     MaterialTheme(
         colorScheme = if (settings.darkTheme) darkWineScheme() else lightWineScheme(),
@@ -238,7 +231,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                             onPickFolder = { customFolder.launch(null) },
                         )
                         AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, settings.downloadFolderUri, downloadMessage, model, onPickFolder = { downloadFolder.launch(null) }, onClearFolder = model::clearDownloadFolder)
-                        AppTab.MINE -> MineScreen(settings, model, onNcmLogin = { ncmLoginVisible = true; model.startNcmQrLogin() }, onNcmAccount = { ncmAccountVisible = true }, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                        AppTab.MINE -> MineScreen(settings, model, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
                     }
                 }
                 if (queueVisible) {
@@ -251,10 +244,8 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             }
         }
         if (playerVisible) FullPlayerDialog(lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
-        if (ncmLoginVisible) NcmQrLoginDialog(ncmQrLogin, onDismiss = { ncmLoginVisible = false; model.cancelNcmQrLogin() }, onRefresh = model::startNcmQrLogin)
         if (settingsVisible) SettingsDialog(settings, cacheSpaceBytes = model.onlineCacheSpace, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false }, onClearCache = model::clearOnlineCache)
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
-        if (ncmAccountVisible) NcmAccountDialog(settings, onDismiss = { ncmAccountVisible = false }, onLogout = { model.logoutNcm(); ncmAccountVisible = false })
         if (localPlaylistCreateVisible) CreateLocalPlaylistDialog(onDismiss = { localPlaylistCreateVisible = false }, onCreate = { name -> model.createLocalPlaylist(name); localPlaylistCreateVisible = false })
         playlistImportSource?.let { source -> PlaylistImportDialog(source, onDismiss = { playlistImportSource = null }, onImport = { input -> model.importPlaylist(source, input); playlistImportSource = null }) }
     }

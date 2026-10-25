@@ -655,9 +655,6 @@ internal fun DonateDialog(onDismiss: () -> Unit) {
 
 @Composable
 internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, onDismiss: () -> Unit, onSave: (AppSettings) -> Unit, onClearCache: () -> Unit = {}) {
-    var primaryNcm by remember(settings) { mutableStateOf(settings.ncmcBaseUrl) }
-    var backupNcm by remember(settings) { mutableStateOf(settings.backupNcmcBaseUrl) }
-    var useBackupNcm by remember(settings) { mutableStateOf(settings.useBackupNcmc) }
     var chkszBase by remember(settings) { mutableStateOf(settings.chkszBaseUrl) }
     var apiKey by remember(settings) { mutableStateOf(settings.chkszApiKey) }
     var streamQuality by remember(settings) { mutableStateOf(settings.streamQuality) }
@@ -680,8 +677,6 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                QualitySelector("网易云 · 试听音质", AppSettings.Quality.entries, streamQuality) { streamQuality = it }
-                QualitySelector("网易云 · 下载音质", AppSettings.Quality.entries, quality) { quality = it }
                 QualitySelector("QQ · 试听音质", AppSettings.QqQuality.entries, streamQqQuality) { streamQqQuality = it }
                 QualitySelector("QQ · 下载音质", AppSettings.QqQuality.entries, qqQuality) { qqQuality = it }
                 item { Text("在线试听缓存", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
@@ -704,14 +699,10 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
                         FilledTonalButton(onClick = onClearCache, modifier = Modifier.height(48.dp)) { Text("清空缓存") }
                     }
                 }
-                item { Text("网易云数据服务", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
-                item { TextField(primaryNcm, { primaryNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("主 NCMC 地址") }, singleLine = true) }
-                item { TextField(backupNcm, { backupNcm = it }, modifier = Modifier.fillMaxWidth(), label = { Text("备用 NCMC 地址（可选）") }, singleLine = true) }
-                item { SettingRow("使用备用 NCMC", "主线路异常时可手动切换", Icons.Default.Refresh, useBackupNcm) { useBackupNcm = !useBackupNcm } }
-                item { Text("QQ / ChKSz API", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+                item { Text("QQ 搜索与下载", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
                 item { TextField(chkszBase, { chkszBase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz 主地址") }, singleLine = true) }
                 item { TextField(apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ChKSz API Key（必填）") }, singleLine = true) }
-                item { Text("NCMC 仅用于网易云搜索、歌单、歌词与登录等数据服务，不再获取任何音源。QQ 搜索及网易云播放/下载只使用你配置的 ChKSz 主线路，必须填写 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("轻音当前使用 QQ 搜索、公开歌单拉取和 ChKSz 音源下载，不再依赖网易云 NCMC 服务。请填写 ChKSz API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = {
@@ -723,9 +714,6 @@ internal fun SettingsDialog(settings: AppSettings, cacheSpaceBytes: Long = 0L, o
                     streamQqQuality = streamQqQuality,
                     qqQuality = qqQuality,
                     cacheLimitBytes = (cacheLimitMb.toLongOrNull() ?: 0L).coerceAtLeast(64L) * 1024L * 1024L,
-                    ncmcBaseUrl = primaryNcm,
-                    backupNcmcBaseUrl = backupNcm,
-                    useBackupNcmc = useBackupNcm,
                     chkszBaseUrl = chkszBase,
                     useChkszBackup = false,
                     chkszApiKey = apiKey,
