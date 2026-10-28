@@ -5,6 +5,10 @@ import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.util.Base64
+import android.webkit.CookieManager
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -83,6 +87,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -770,4 +775,43 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes < 1_024L * 1_024L -> "%.1f KB".format(bytes / 1_024f)
     bytes < 1_024L * 1_024L * 1_024L -> "%.1f MB".format(bytes / (1_024f * 1_024f))
     else -> "%.2f GB".format(bytes / (1_024f * 1_024f * 1_024f))
+}
+
+@Composable
+internal fun NeteaseOfficialLoginDialog(onDismiss: () -> Unit, onSessionReady: (String) -> Unit) {
+    var detected by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("登录网易云官方账号") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("请在下方官方页面完成登录。轻音只在本机保存网易云会话，用于请求官方播放地址。", style = MaterialTheme.typography.bodySmall)
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().height(520.dp),
+                    factory = { context ->
+                        WebView(context).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.cacheMode = WebSettings.LOAD_DEFAULT
+                            settings.userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView, url: String) {
+                                    super.onPageFinished(view, url)
+                                    val cookie = CookieManager.getInstance().getCookie("https://music.163.com").orEmpty()
+                                    if (!detected && cookie.split(';').any { it.trim().startsWith("MUSIC_U=") }) {
+                                        detected = true
+                                        onSessionReady(cookie)
+                                    }
+                                }
+                            }
+                            loadUrl("https://music.163.com/#/login")
+                        }
+                    },
+                    update = { view -> view.onResume() },
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }

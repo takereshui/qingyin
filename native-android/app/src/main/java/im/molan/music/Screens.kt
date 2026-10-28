@@ -208,6 +208,7 @@ internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackEr
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = { source = Track.Source.QQ }, modifier = Modifier.height(40.dp)) { Text(if (source == Track.Source.QQ) "QQ 音乐 ✓" else "QQ 音乐") }
+                FilledTonalButton(onClick = { source = Track.Source.NETEASE }, modifier = Modifier.height(40.dp)) { Text(if (source == Track.Source.NETEASE) "网易云 ✓" else "网易云") }
             }
         }
         item {
@@ -225,7 +226,7 @@ internal fun SearchScreen(searchTracks: List<Track>, message: String, playbackEr
         }
         item {
             Text(
-                "QQ 搜索结果通过 ChKSz 解析播放和下载；请先在设置中填写 ChKSz API Key。",
+                if (source == Track.Source.NETEASE) "网易云搜索和播放使用官方登录会话；高音质受账号权限和版权限制。" else "QQ 搜索结果通过 ChKSz 解析播放和下载；请先在设置中填写 ChKSz API Key。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -556,7 +557,7 @@ internal fun PlaylistHubScreen(playlists: List<PlaylistSummary>, playlistMessage
 }
 
 @Composable
-internal fun MineScreen(settings: AppSettings, model: MainViewModel, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit) {
+internal fun MineScreen(settings: AppSettings, model: MainViewModel, onImportPlaylist: (Track.Source) -> Unit, onSettings: () -> Unit, onDonate: () -> Unit, onNeteaseLogin: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -570,8 +571,13 @@ internal fun MineScreen(settings: AppSettings, model: MainViewModel, onImportPla
             }
         }
         item {
+            FilledTonalButton(onClick = onNeteaseLogin, modifier = Modifier.fillMaxWidth().height(44.dp)) {
+                Text(if (settings.ncmCookie.isBlank()) "登录网易云官方账号" else "网易云已登录 · 重新登录")
+            }
+        }
+        item {
             Card(shape = RoundedCornerShape(16.dp)) {
-                Text("歌单已移动到下方独立的“歌单”入口。这里保留 QQ 歌单导入、设置和赞赏功能。", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("歌单已移动到下方独立的“歌单”入口。网易云搜索和播放使用官方登录会话；QQ 歌单和下载仍保持原有流程。", Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { FilledTonalButton(onClick = onDonate, modifier = Modifier.fillMaxWidth().height(44.dp)) { Text("赞赏支持") } }

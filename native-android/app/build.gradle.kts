@@ -15,8 +15,8 @@ android {
         applicationId = "im.molan.music"
         minSdk = 24
         targetSdk = 35
-        versionCode = 42
-        versionName = "1.2.0"
+        versionCode = 43
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

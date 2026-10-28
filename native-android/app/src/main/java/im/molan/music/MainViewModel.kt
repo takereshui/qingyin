@@ -795,6 +795,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _networkMessage.value = "正在搜索${if (source == Track.Source.QQ) " QQ 音乐" else "网易云音乐"}…"
             val result = when (source) {
+                Track.Source.NETEASE -> runCatching { ncmRepository.search(settings.value, keyword.trim()) }
                 else -> runCatching { qqRepository.search(settings.value, keyword.trim()) }
             }
             result.onSuccess { tracks ->
@@ -807,10 +808,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _networkMessage.value = when {
                     tracks.isEmpty() -> "未找到相关歌曲"
                     localReady > 0 -> "找到 ${tracks.size} 首歌曲，其中 ${localReady} 首可直接本地播放"
-                    else -> "找到 ${tracks.size} 首 QQ 歌曲"
+                    else -> "找到 ${tracks.size} 首${if (source == Track.Source.NETEASE) "网易云" else "QQ"}歌曲"
                 }
             }.onFailure { error ->
-                _networkMessage.value = "搜索失败：${error.message ?: "QQ API 不可用或未配置 Key"}"
+                _networkMessage.value = "搜索失败：${error.message ?: if (source == Track.Source.NETEASE) "请先登录网易云官方账号" else "QQ API 不可用或未配置 Key"}"
             }
         }
     }
@@ -934,7 +935,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withTimeout(25_000L) {
                     findLocalMatch(track)?.let { return@withTimeout it.local to it }
                     val resolved = when (track.source) {
-                        Track.Source.NETEASE -> error("网易云 NCMC 功能已移除，请使用 QQ 搜索")
+                        Track.Source.NETEASE -> ncmRepository.resolvePlayback(settings.value, track)
                         Track.Source.QQ -> qqRepository.resolve(settings.value, track).let { response ->
                             if (response.lyric.isNotBlank()) lyricsRepository.save(response.track, response.lyric)
                             response.track
@@ -1049,7 +1050,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun playNetease(track: Track, message: MutableStateFlow<String>) {
-        message.value = "无法播放《${track.title}》：网易云 NCMC 功能已移除，请使用 QQ 搜索"
+        beginLyricSession(track)
+        viewModelScope.launch {
+            message.value = "正在请求网易云 ChKSz 播放地址…"
+            runCatching { ncmRepository.resolvePlayback(settings.value, track) }
+                .onSuccess { resolved ->
+                    playback.playQueue(listOf(resolved), 0)
+                    loadLyrics(resolved)
+                    message.value = "正在播放：${resolved.title} · ${resolved.resolvedQuality?.label ?: "网易云官方"}"
+                }
+                .onFailure { error -> message.value = "网易云无法播放：${error.message ?: "请先登录网易云官方账号"}" }
+        }
     }
 
     /** 在任何播放入口切歌前立即清空上一首歌词，并创建新的受控歌词会话。 */
@@ -1270,7 +1281,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun resolveDownloadTrack(track: Track): Track = when (track.source) {
-        Track.Source.NETEASE -> error("网易云 NCMC 功能已移除，请使用 QQ 搜索")
+        Track.Source.NETEASE -> ncmRepository.resolveDownload(settings.value, track)
         Track.Source.QQ -> qqRepository.resolveDownload(settings.value, track)
         else -> requireNotNull(track.remoteUrl) { "该曲目当前没有可下载的在线音源" }.let { track }
     }
@@ -1328,6 +1339,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val SUPPORTED_DOWNLOAD_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "mp4")
+
+    fun saveNeteaseWebSession(cookie: String) {
+        val clean = cookie.split(';').map(String::trim)
+            .filter { it.startsWith("MUSIC_U=") || it.startsWith("MUSIC_A=") || it.startsWith("NMTID=") || it.startsWith("__csrf=") || it.startsWith("os=") || it.startsWith("appver=") || it.startsWith("deviceId=") }
+            .joinToString("; ")
+        if (clean.isNotBlank()) updateSettings { it.copy(ncmCookie = clean, ncmNickname = "网易云官方账号") }
+    }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         val current = settings.value

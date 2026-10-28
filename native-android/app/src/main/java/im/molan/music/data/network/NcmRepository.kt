@@ -7,11 +7,18 @@ import im.molan.music.model.PlaylistSummary
 import im.molan.music.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.KeyFactory
+import java.security.spec.X509EncodedKeySpec
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import kotlin.random.Random
 import java.util.concurrent.TimeUnit
 
 data class NcmQrCheck(val code: Int, val cookie: String)
@@ -69,9 +76,45 @@ class NcmRepository(
     }
 
     suspend fun search(settings: AppSettings, keyword: String, limit: Int = 30): List<Track> = withContext(Dispatchers.IO) {
-        val payload = request(settings, "/cloudsearch", mapOf("keywords" to keyword, "limit" to limit.toString()))
-        val data = payload.optJSONObject("data") ?: payload.optJSONObject("result") ?: payload
+        val payload = officialWeapi(settings, "/weapi/cloudsearch/pc", mapOf(
+            "s" to keyword,
+            "type" to 1,
+            "limit" to limit,
+            "offset" to 0,
+            "total" to true,
+        ))
+        val data = payload.optJSONObject("result") ?: payload.optJSONObject("data") ?: payload
         songs(data.optJSONArray("songs") ?: payload.optJSONArray("songs") ?: JSONArray())
+    }
+
+    /** Q-music 采用的网易云官方播放地址：登录会话 + WeAPI，URL 只短期有效。 */
+    suspend fun resolveOfficial(settings: AppSettings, track: Track, isDownload: Boolean = false): Track = withContext(Dispatchers.IO) {
+        require(track.source == Track.Source.NETEASE) { "该曲目不是网易云音源" }
+        require(settings.ncmCookie.isNotBlank()) { "请先登录网易云官方账号" }
+        val target = if (isDownload) settings.quality else settings.streamQuality
+        val order = listOf(AppSettings.Quality.HIRES, AppSettings.Quality.LOSSLESS, AppSettings.Quality.EXHIGH, AppSettings.Quality.HIGH, AppSettings.Quality.STANDARD)
+        val candidates = (listOf(target) + order).distinct()
+        val id = track.id.removePrefix("ncm:").toLongOrNull() ?: error("网易云歌曲 ID 无效")
+        for (candidate in candidates) {
+            val payload = runCatching {
+                officialWeapi(settings, "/weapi/song/enhance/player/url/v1", mapOf(
+                    "ids" to "[$id]",
+                    "level" to candidate.neteaseLevel(),
+                    "encodeType" to "flac",
+                ))
+            }.getOrNull() ?: continue
+            val item = payload.optJSONArray("data")?.optJSONObject(0) ?: continue
+            val rawUrl = item.optString("url").replace("\\/", "/")
+            if (payload.optInt("code", 0) == 200 && item.optInt("code", 200) == 200 && rawUrl.startsWith("http")) {
+                return@withContext track.copy(
+                    remoteUrl = rawUrl,
+                    resolvedQuality = candidate,
+                    audioExtension = audioExtensionFromUrl(rawUrl),
+                    resolvedAt = System.currentTimeMillis(),
+                )
+            }
+        }
+        error("网易云官方音源不可用，可能需要会员或受版权限制")
     }
 
     /**
@@ -105,8 +148,65 @@ class NcmRepository(
         )
     }
 
-    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = false)
-    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = resolveRemote(settings, track, isDownload = true)
+    /** ChKSz 是主线路；仅当 ChKSz 不可用时才尝试网易云官方短时地址。 */
+    suspend fun resolvePlayback(settings: AppSettings, track: Track): Track = runCatching { resolveRemote(settings, track, isDownload = false) }
+        .getOrElse { resolveOfficial(settings, track, isDownload = false) }
+    suspend fun resolveDownload(settings: AppSettings, track: Track): Track = runCatching { resolveRemote(settings, track, isDownload = true) }
+        .getOrElse { resolveOfficial(settings, track, isDownload = true) }
+
+
+    private fun AppSettings.Quality.neteaseLevel(): String = when (this) {
+        AppSettings.Quality.HIRES, AppSettings.Quality.JYMASTER -> "hires"
+        AppSettings.Quality.LOSSLESS -> "lossless"
+        AppSettings.Quality.EXHIGH, AppSettings.Quality.HIGH -> "exhigh"
+        AppSettings.Quality.STANDARD -> "standard"
+    }
+
+    private fun officialWeapi(settings: AppSettings, path: String, values: Map<String, Any>): JSONObject {
+        val csrf = Regex("(?:^|; )__csrf=([^;]*)").find(settings.ncmCookie)?.groupValues?.getOrNull(1).orEmpty()
+        val data = JSONObject().apply {
+            values.forEach { (key, value) -> put(key, value) }
+            put("csrf_token", csrf)
+        }
+        val (params, encSecKey) = weapiForm(data.toString())
+        val body = FormBody.Builder().add("params", params).add("encSecKey", encSecKey).build()
+        val url = "https://music.163.com$path".toHttpUrl()
+        client.newCall(Request.Builder().url(url).post(body)
+            .header("Cookie", settings.ncmCookie)
+            .header("Origin", "https://music.163.com")
+            .header("Referer", "https://music.163.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+            .build()).execute().use { response ->
+            if (!response.isSuccessful) error("网易云官方接口 HTTP ${response.code}")
+            val raw = response.body?.string().orEmpty()
+            require(raw.isNotBlank()) { "网易云官方接口返回空响应" }
+            return JSONObject(raw)
+        }
+    }
+
+    private fun weapiForm(json: String): Pair<String, String> {
+        val iv = "0102030405060708".toByteArray(Charsets.UTF_8)
+        val preset = "0CoJUm6Qyw8W8jud".toByteArray(Charsets.UTF_8)
+        val alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        val secret = ByteArray(16) { alphabet[Random.nextInt(alphabet.length)].code.toByte() }
+        val first = aesCbc(json.toByteArray(Charsets.UTF_8), preset, iv)
+        val params = aesCbc(first.encodeBase64().toByteArray(Charsets.UTF_8), secret, iv).encodeBase64()
+        val reversed = secret.reversedArray()
+        val padded = ByteArray(128 - reversed.size) + reversed
+        val publicKey = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDgtQn2JZ34ZC28NWYpAUd98iZ37BUrX/aKzmFbt7clFSs6sXqHauqKWqdtLkF2KexO40H1YTX8z2lSgBBOAxLsvaklV8k4cBFK9snQXE9/DDaFt6Rr7iVZMldczhC0JNgTz+SHXT6CBHuX3e9SdB1Ua44oncaTWz7OBGLbCiK45wIDAQAB"
+        val key = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(android.util.Base64.decode(publicKey, android.util.Base64.DEFAULT)))
+        val cipher = Cipher.getInstance("RSA/ECB/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
+        val encrypted = cipher.doFinal(padded).toHex()
+        return params to encrypted
+    }
+
+    private fun aesCbc(input: ByteArray, key: ByteArray, iv: ByteArray): ByteArray = Cipher.getInstance("AES/CBC/PKCS5Padding").run {
+        init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        doFinal(input)
+    }
+
+    private fun ByteArray.encodeBase64(): String = android.util.Base64.encodeToString(this, android.util.Base64.NO_WRAP)
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun audioExtensionFromUrl(url: String): String {
         val filePart = url.substringBefore('?').substringAfterLast('/')

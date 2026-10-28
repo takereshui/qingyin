@@ -111,6 +111,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     var playerVisible by rememberSaveable { mutableStateOf(false) }
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
     var donateVisible by rememberSaveable { mutableStateOf(false) }
+    var neteaseLoginVisible by rememberSaveable { mutableStateOf(false) }
     var playlistImportSource by rememberSaveable { mutableStateOf<Track.Source?>(null) }
     var localPlaylistCreateVisible by rememberSaveable { mutableStateOf(false) }
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -148,7 +149,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
     }
 
     val overlayOpen = queueVisible || playerVisible || settingsVisible ||
-        donateVisible || playlistImportSource != null || localPlaylistCreateVisible
+        donateVisible || neteaseLoginVisible || playlistImportSource != null || localPlaylistCreateVisible
     val atRoot = !overlayOpen && playlistDetail == null && tab == AppTab.HOME
     // 非根页返回：最上层是播放器/队列先关，其次是歌单详情，最后回首页。
     BackHandler(enabled = !atRoot) {
@@ -158,6 +159,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
             playlistDetail != null -> model.closePlaylist()
             settingsVisible -> settingsVisible = false
             donateVisible -> donateVisible = false
+            neteaseLoginVisible -> neteaseLoginVisible = false
             playlistImportSource != null -> playlistImportSource = null
             localPlaylistCreateVisible -> localPlaylistCreateVisible = false
             else -> tab = AppTab.HOME
@@ -231,7 +233,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
                             onPickFolder = { customFolder.launch(null) },
                         )
                         AppTab.DOWNLOADS -> DownloadsScreen(downloads, downloadedTracks, settings.downloadFolderUri, downloadMessage, model, onPickFolder = { downloadFolder.launch(null) }, onClearFolder = model::clearDownloadFolder)
-                        AppTab.MINE -> MineScreen(settings, model, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true })
+                        AppTab.MINE -> MineScreen(settings, model, onImportPlaylist = { playlistImportSource = it }, onSettings = { settingsVisible = true }, onDonate = { donateVisible = true }, onNeteaseLogin = { neteaseLoginVisible = true })
                     }
                 }
                 if (queueVisible) {
@@ -246,6 +248,7 @@ private fun QingyinApp(model: MainViewModel = viewModel()) {
         if (playerVisible) FullPlayerDialog(lyrics, playbackError, downloadActionMessage, model, onDismiss = { playerVisible = false })
         if (settingsVisible) SettingsDialog(settings, cacheSpaceBytes = model.onlineCacheSpace, onDismiss = { settingsVisible = false }, onSave = { next -> model.updateSettings { next }; settingsVisible = false }, onClearCache = model::clearOnlineCache)
         if (donateVisible) DonateDialog(onDismiss = { donateVisible = false })
+        if (neteaseLoginVisible) NeteaseOfficialLoginDialog(onDismiss = { neteaseLoginVisible = false }, onSessionReady = { cookie -> model.saveNeteaseWebSession(cookie); neteaseLoginVisible = false })
         if (localPlaylistCreateVisible) CreateLocalPlaylistDialog(onDismiss = { localPlaylistCreateVisible = false }, onCreate = { name -> model.createLocalPlaylist(name); localPlaylistCreateVisible = false })
         playlistImportSource?.let { source -> PlaylistImportDialog(source, onDismiss = { playlistImportSource = null }, onImport = { input -> model.importPlaylist(source, input); playlistImportSource = null }) }
     }
