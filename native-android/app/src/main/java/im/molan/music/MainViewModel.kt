@@ -1344,7 +1344,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val clean = cookie.split(';').map(String::trim)
             .filter { it.startsWith("MUSIC_U=") || it.startsWith("MUSIC_A=") || it.startsWith("NMTID=") || it.startsWith("__csrf=") || it.startsWith("os=") || it.startsWith("appver=") || it.startsWith("deviceId=") }
             .joinToString("; ")
-        if (clean.isNotBlank()) updateSettings { it.copy(ncmCookie = clean, ncmNickname = "网易云官方账号") }
+        if (clean.isNotBlank()) {
+            viewModelScope.launch {
+                val authenticated = settings.value.copy(ncmCookie = clean)
+                val account = runCatching { ncmRepository.account(authenticated) }.getOrNull()
+                val signedIn = authenticated.copy(ncmNickname = account?.nickname ?: "网易云官方账号", ncmUserId = account?.userId ?: 0L)
+                settingsRepository.update { it.copy(ncmCookie = signedIn.ncmCookie, ncmNickname = signedIn.ncmNickname, ncmUserId = signedIn.ncmUserId) }
+                if (signedIn.ncmUserId > 0L) loadMyPlaylists(force = true, authenticatedSettings = signedIn)
+            }
+        }
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {

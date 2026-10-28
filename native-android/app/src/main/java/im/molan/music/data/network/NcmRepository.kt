@@ -49,28 +49,45 @@ class NcmRepository(
     }
 
     suspend fun account(settings: AppSettings): NcmAccount? = withContext(Dispatchers.IO) {
-        val payload = request(settings, "/user/account", emptyMap())
-        val profile = payload.optJSONObject("profile") ?: payload.optJSONObject("data")?.optJSONObject("profile") ?: return@withContext null
-        NcmAccount(profile.optString("nickname"), profile.optLong("userId", 0L))
+        val payload = officialWeapi(settings, "/weapi/w/nuser/account/get", emptyMap())
+        val profile = payload.optJSONObject("profile")
+        val userId = profile?.optLong("userId", 0L) ?: payload.optJSONObject("account")?.optLong("id", 0L) ?: 0L
+        if (payload.optInt("code", 0) != 200 || userId <= 0L) null
+        else NcmAccount(profile?.optString("nickname").orEmpty(), userId)
     }
 
-    suspend fun userPlaylists(settings: AppSettings, userId: Long, limit: Int = 60): List<PlaylistSummary> = withContext(Dispatchers.IO) {
-        require(userId > 0) { "未获取到网易云用户信息" }
-        val payload = request(settings, "/user/playlist", mapOf("uid" to userId.toString(), "limit" to limit.toString()))
-        val rows = payload.optJSONArray("playlist") ?: payload.optJSONObject("data")?.optJSONArray("playlist") ?: JSONArray()
-        playlistSummaries(rows)
+    suspend fun userPlaylists(settings: AppSettings, userId: Long, limit: Int = 1000): List<PlaylistSummary> = withContext(Dispatchers.IO) {
+        val uid = userId.takeIf { it > 0L } ?: account(settings)?.userId ?: error("网易云官方账号未登录")
+        val payload = officialWeapi(settings, "/weapi/user/playlist", mapOf("uid" to uid, "offset" to 0, "limit" to limit, "includeVideo" to true))
+        playlistSummaries(payload.optJSONArray("playlist") ?: JSONArray())
     }
 
     suspend fun playlistDetail(settings: AppSettings, playlistId: String): PlaylistDetail = withContext(Dispatchers.IO) {
-        val payload = request(settings, "/playlist/detail", mapOf("id" to playlistId))
-        val data = payload.optJSONObject("playlist") ?: payload.optJSONObject("data") ?: payload
-        val summary = playlistSummary(data, playlistId)
-        val tracks = songs(data.optJSONArray("tracks") ?: data.optJSONArray("songs") ?: JSONArray())
-        PlaylistDetail(summary, tracks)
+        val id = playlistId.removePrefix("ncm:")
+        val playlistNumericId = id.toLongOrNull() ?: error("网易云歌单 ID 无效")
+        val overview = officialWeapi(settings, "/weapi/v6/playlist/detail", mapOf("id" to playlistNumericId, "n" to 100000, "s" to 8))
+        if (overview.optInt("code", 0) == 301) error("网易云官方账号登录已失效")
+        val playlist = overview.optJSONObject("playlist") ?: error("网易云歌单详情返回为空")
+        val ids = playlist.optJSONArray("trackIds") ?: JSONArray()
+        val tracks = JSONArray()
+        for (offset in 0 until ids.length() step 200) {
+            val batch = buildList {
+                for (index in offset until minOf(offset + 200, ids.length())) {
+                    ids.optJSONObject(index)?.optLong("id", 0L)?.takeIf { it > 0L }?.let { add(JSONObject().put("id", it)) }
+                }
+            }
+            if (batch.isEmpty()) continue
+            val detail = officialWeapi(settings, "/weapi/v3/song/detail", mapOf("c" to JSONArray(batch).toString()))
+            if (detail.optInt("code", 0) != 200) error("网易云歌单曲目详情获取失败")
+            detail.optJSONArray("songs")?.let { rows -> for (index in 0 until rows.length()) rows.optJSONObject(index)?.let(tracks::put) }
+        }
+        playlist.put("tracks", tracks)
+        val summary = playlistSummary(playlist, id)
+        PlaylistDetail(summary, songs(tracks))
     }
 
     suspend fun dailySongs(settings: AppSettings): List<Track> = withContext(Dispatchers.IO) {
-        val payload = request(settings, "/recommend/songs", emptyMap())
+        val payload = officialWeapi(settings, "/weapi/v3/discovery/recommend/songs", mapOf("offset" to 0, "total" to true, "limit" to 30))
         val data = payload.optJSONObject("data") ?: payload
         songs(data.optJSONArray("dailySongs") ?: payload.optJSONArray("dailySongs") ?: JSONArray())
     }
